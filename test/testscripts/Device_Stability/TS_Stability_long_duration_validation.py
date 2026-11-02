@@ -22,29 +22,17 @@ from stability_utils import *
 from datetime import datetime
 from rdkbmeshzap.common_utils import report_logger
 
-def test_stability_long_duration_validation(initialize, common_setup):
+def test_stability_long_duration_validation(initialize, common_setup, resource_usage_dir):
     """
     Test to verify the stability of the system over a 24-hour period.
     """
     report_logger.print_test(f"[{get_timestamp()}] Entering test_stability_long_duration_validation")
     devices = common_setup
-    report_logger.print_step(f"STEP 1: retrieving time duration and local log directory details from configuration file")
+    report_logger.print_step(f"STEP 1: retrieving time duration from configuration file")
     timeout = initialize.read_from_database("test_parameters", "device_stability", "Endurance_test_duration_in_seconds")
     if timeout <= 0:
         pytest.fail("long duration test timeout must be greater than 0. please update the configuration \"Endurance_test_duration_in_seconds\".")
     report_logger.print_info(f"INFO: Retrieved long duration stability test timeout: {timeout} seconds")
-    ctrl_local_dir = initialize.read_from_database("controller", "local_log_directory")
-    if ctrl_local_dir == "</replace/with/local/path>":
-        pytest.fail("Local log directory  is not set. Please update the configuration \"local_log_directory\".")
-    else:
-        report_logger.print_info(f"INFO: Retrieved local_log_directory: {ctrl_local_dir}")
-    if not os.path.exists(ctrl_local_dir):
-        report_logger.print_info(f"INFO: Local log directory {ctrl_local_dir} does not exist. creating it now.")
-        os.makedirs(ctrl_local_dir)
-        report_logger.print_info(f"INFO: Local log directory {ctrl_local_dir} created successfully.")
-    else:
-        report_logger.print_info(f"INFO: Local log directory {ctrl_local_dir} exists.")
-    report_logger.print_success("PASS: Successfully retrieved local log directory and test duration")
     report_logger.print_step("STEP 2: Start monitoring script in controller")
     initialize.execute_command("controller", "python3 /nvram/monitoring_tool.py &")
     time.sleep(5)
@@ -75,15 +63,12 @@ def test_stability_long_duration_validation(initialize, common_setup):
                 except Exception as e:
                     report_logger.print_error(f"FAIL: [{get_timestamp()}] {device}: Error occurred while checking backhaul status: {e}")
                     devices.remove(device)
-        time.sleep(30)
+        time.sleep(60)
     step_count += 1
     report_logger.print_step(f"STEP {step_count}: Stopping monitoring script in controller")
     initialize.execute_command("controller", "pkill -f monitoring_tool.py")
     report_logger.print_success("PASS: Monitoring script stopped in controller")
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    ctrl_local_dir = os.path.join(ctrl_local_dir, "test_stability_long_duration_validation_" + str(timestamp))
-    if not os.path.exists(ctrl_local_dir):
-        os.makedirs(ctrl_local_dir)
     step_count += 1
     sub_step_count = 0
     available_log_files = []
@@ -96,13 +81,13 @@ def test_stability_long_duration_validation(initialize, common_setup):
             available_log_files.append(os.path.basename(log_file))
             report_logger.print_success(f"PASS: Log file found on controller.")
             report_logger.print_step(f"STEP {step_count}.{sub_step_count}: Downloading log file locally and deleting remote file instance.")
-            initialize.get_file("controller", log_file, ctrl_local_dir)
+            initialize.get_file("controller", log_file, resource_usage_dir)
             initialize.execute_command("controller", f"rm -f {log_file}")
             report_logger.print_success(f"PASS: Log file downloaded and deleted the file from controller")
         else:
             report_logger.print_error(f"FAIL: Controller: Log file not found : {log_file}")
     for log_file in available_log_files:
         step_count += 1
-        log_file_path = os.path.join(ctrl_local_dir, log_file)
+        log_file_path = os.path.join(resource_usage_dir, log_file)
         log_analyzer(log_file_path, step_count)
     report_logger.print_test(f"[{get_timestamp()}] Exiting test_stability_long_duration_validation")
