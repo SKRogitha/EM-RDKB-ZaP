@@ -108,15 +108,14 @@ Verify that all Extenders recover reliably and within the configured KPI across 
 | Step Number | Controller | Extenders (3 Nos) | Expected Result |
 |-------------|------------|-------------------|-----------------|
 | 1 | N/A | Discover all Extenders and store each Extender's AL MAC address for later capture validation. | The Extenders and their AL MAC addresses are recorded. |
-| 2 | For each of five cycles, record a common monotonic start time and reboot all Extenders concurrently. Start one IEEE 1905 capture on the Controller during Cycle 1 and keep it running through the remaining cycles. | Reboot all Extenders concurrently in each cycle. | Each cycle starts a recovery KPI window shared by all Extenders; the Controller capture spans all five cycles. |
+| 2 | For each cycle, record a common monotonic start time and reboot all Extenders concurrently. After Cycles 1–4 pass, start the Controller's single IEEE 1905 capture immediately before the Cycle 5 reboot. | Reboot all Extenders concurrently for five consecutive cycles. | All five recovery cycles are completed; the capture covers Cycle 5 only. |
 | 3 | N/A | After each reboot, reconnect to every Extender over SSH concurrently. Close its previous connection and retry every 5 seconds until the cycle's KPI deadline. | SSH connectivity is restored for every Extender within each cycle's KPI. |
 | 4 | N/A | After each Extender reconnects, verify `onewifi`, `ieee1905_em_agent`, and `em_agent` every 2 seconds until the cycle's KPI deadline. Record recovery time from that cycle's start. | Required services become active and recovery time is recorded for each Extender in every cycle. |
-| 5 | N/A | Validate each Extender's recovery KPI and reachability after every cycle. | All Extenders are reachable and recover within the KPI after all five cycles. |
-| 6 | N/A | After Cycle 5, identify each Extender's upstream parent device. | An upstream parent is identified for every Extender. |
-| 7 | N/A | Keep the Controller capture running for 60 seconds after Cycle 5. | Topology traffic has time to propagate into the capture. |
-| 8 | Stop and collect the IEEE 1905 capture from the Controller. | N/A | The capture covering all five recovery cycles is saved locally. |
-| 9 | Reassemble the Controller capture. For each Extender AL MAC, check for Topology Query and Topology Response messages whose source or destination matches that AL MAC. | N/A | Both message types are found for every Extender in the Controller capture. |
-| 10 | Review accumulated results from all five cycles and the final topology validation. | N/A | The test fails if any Extender recovery or validation check failed. |
+| 5 | N/A | Validate each Extender's recovery KPI and reachability after every cycle. | All Extenders are reachable and recover within the KPI across all five cycles. |
+| 6 | After Cycle 5, identify each Extender's upstream parent device, then keep the capture running for 60 seconds to allow topology traffic to propagate. | N/A | An upstream parent is identified for every Extender, and the Cycle 5 capture includes the propagation period. |
+| 7 | Stop and collect the Controller capture. | N/A | The capture covering Cycle 5 and the following propagation period is saved locally. |
+| 8 | Reassemble the Cycle 5 capture. For each Extender AL MAC, check for Topology Query and Topology Response messages whose source or destination matches that AL MAC. | N/A | Both message types are found for every Extender in the Cycle 5 capture. |
+| 9 | Review accumulated recovery results from all five cycles and the Cycle 5 topology validation. | N/A | The test fails if any cycle's recovery or any Cycle 5 topology validation check failed. |
 
 ---
 

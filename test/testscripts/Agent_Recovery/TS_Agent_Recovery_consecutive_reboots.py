@@ -46,9 +46,20 @@ def test_agent_recovery_consecutive_reboots(initialize):
 
         for cycle in range(1, cr_utils.REBOOT_CYCLES + 1):
             step = cycle + 1
-            report_logger.print_info(f"INFO: Starting Extender recovery cycle {cycle}/{cr_utils.REBOOT_CYCLES}")
             report_logger.print_step(f"STEP {step}: Extender recovery cycle {cycle}/{cr_utils.REBOOT_CYCLES}")
-            report_logger.print_step(f"STEP {step}.1: Reboot all Extenders")
+            step_offset = int(cycle == cr_utils.REBOOT_CYCLES)
+            if step_offset:
+                report_logger.print_info(f"INFO: Cycle {cycle} is about to start. Controller capture will run during this cycle to validate topology after {cr_utils.REBOOT_CYCLES} consecutive reboots.")
+                capture_names["controller"] = device_utils.start_capture(
+                    initialize,
+                    "controller",
+                    "test_agent_recovery_consecutive_reboots",
+                    step=f"{step}.1",
+                    include_device=True,
+                )
+                capture_started.add("controller")
+
+            report_logger.print_step(f"STEP {step}.{1 + step_offset}: Reboot all Extenders")
             cycle_start = time.monotonic()
             reboot_errors = {}
             with ThreadPoolExecutor(max_workers=len(extenders)) as executor:
@@ -69,21 +80,10 @@ def test_agent_recovery_consecutive_reboots(initialize):
                 else:
                     report_logger.print_info(f"INFO: Reboot command executed for {extender}")
 
-            if "controller" not in capture_names:
-                # Capture controller traffic across the recovery cycles.
-                capture_names["controller"] = device_utils.start_capture(
-                    initialize,
-                    "controller",
-                    "test_agent_recovery_consecutive_reboots",
-                    step=f"{step}.2",
-                    include_device=True,
-                )
-                capture_started.add("controller")
-
-            report_logger.print_step(f"STEP {step}.3: Recover Extenders concurrently")
+            report_logger.print_step(f"STEP {step}.{2 + step_offset}: Recover Extenders concurrently")
             recovery_times = {}
             threads = []
-            for index, extender in enumerate(extenders, start=1):
+            for extender in extenders:
                 thread = threading.Thread(
                     # Recover each extender within the configured KPI window.
                     target=cr_utils.recover_device,
@@ -92,7 +92,7 @@ def test_agent_recovery_consecutive_reboots(initialize):
                         "device": extender,
                         "started_at": cycle_start,
                         "results": recovery_times,
-                        "step": f"{step}.3.{index}",
+                        "step": f"{step}.{2 + step_offset}",
                         "recovery_type": "agent",
                     },
                     name=f"recover-{extender}-cycle-{cycle}",
@@ -102,8 +102,9 @@ def test_agent_recovery_consecutive_reboots(initialize):
             for thread in threads:
                 thread.join()
 
-            report_logger.print_step(f"STEP {step}.4: Validate agent recovery KPI for cycle {cycle}")
+            report_logger.print_step(f"STEP {step}.{3 + step_offset}: Validate Extender reachability after cycle {cycle}")
             cycle_failed = False
+            reachable_extenders = []
             for extender in extenders:
                 result = recovery_times.get(extender)
                 if isinstance(result, BaseException):
@@ -113,17 +114,20 @@ def test_agent_recovery_consecutive_reboots(initialize):
                     report_logger.print_error(f"FAIL: {validation_errors[-1]}")
                     cycle_failed = True
                     continue
-                if result is None or result is False or result >= AGENT_RECOVERY_KPI_SECONDS:
+                if result is False:
                     validation_errors.append(
-                        f"{extender}: cycle {cycle} recovery exceeded {AGENT_RECOVERY_KPI_SECONDS}s"
+                        f"{extender}: cycle {cycle} recovery failed within the KPI"
                     )
                     report_logger.print_error(f"FAIL: {validation_errors[-1]}")
                     cycle_failed = True
                     continue
-                report_logger.print_success(f"PASS: {extender} recovered in {result:.1f}s during cycle {cycle}")
-
-            report_logger.print_step(f"STEP {step}.5: Validate Extender reachability after cycle {cycle}")
-            for extender in extenders:
+                if result is None:
+                    validation_errors.append(
+                        f"{extender}: cycle {cycle} recovery result is unavailable"
+                    )
+                    report_logger.print_error(f"FAIL: {validation_errors[-1]}")
+                    cycle_failed = True
+                    continue
                 # Confirm the extender is reachable after recovery.
                 if not initialize.is_device_alive(extender):
                     validation_errors.append(
@@ -133,6 +137,19 @@ def test_agent_recovery_consecutive_reboots(initialize):
                     cycle_failed = True
                 else:
                     report_logger.print_success(f"PASS: {extender} is reachable after cycle {cycle}")
+                    reachable_extenders.append(extender)
+
+            report_logger.print_step(f"STEP {step}.{4 + step_offset}: Validate recovery KPI for reachable Extenders in cycle {cycle}")
+            for extender in reachable_extenders:
+                result = recovery_times.get(extender)
+                if result >= AGENT_RECOVERY_KPI_SECONDS:
+                    validation_errors.append(
+                        f"{extender}: cycle {cycle} recovery exceeded {AGENT_RECOVERY_KPI_SECONDS}s"
+                    )
+                    report_logger.print_error(f"FAIL: {validation_errors[-1]}")
+                    cycle_failed = True
+                    continue
+                report_logger.print_success(f"PASS: {extender} recovered in {result:.1f}s during cycle {cycle}")
             if cycle_failed:
                 report_logger.print_error(f"FAIL: Extender recovery cycle {cycle}/{cr_utils.REBOOT_CYCLES} failed")
                 return

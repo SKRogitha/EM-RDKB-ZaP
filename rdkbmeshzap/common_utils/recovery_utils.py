@@ -51,7 +51,7 @@ def reconnect_device(initialize, device, step, started_at=None, recovery_type="c
     Return Value: True on success; False when recovery times out.
     Example: reconnect_device(initialize, "extender1", 1, recovery_type="agent")
     """
-    report_logger.print_step(f"STEP {step}: Wait for {device} SSH recovery")
+    report_logger.print_info(f"INFO: Waiting for {device} SSH recovery")
     recovery_kpi = get_recovery_kpi(initialize, recovery_type)
     max_retries = recovery_kpi // RETRY_INTERVAL_SECONDS
     # Use the shared recovery start time when one was provided by the caller.
@@ -102,7 +102,7 @@ def recover_device(initialize, device, started_at, results, step, recovery_type=
             return False
         recovery_kpi = get_recovery_kpi(initialize, recovery_type)
         deadline = started_at + recovery_kpi
-        report_logger.print_step(f"STEP {step}.2: Verify services on {device}")
+        report_logger.print_info(f"INFO: Verify services on {device}")
         if device == "controller":
             services_active = device_utils.verify_controller_services(initialize, deadline)
         else:

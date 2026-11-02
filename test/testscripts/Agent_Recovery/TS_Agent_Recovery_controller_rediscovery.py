@@ -81,7 +81,7 @@ def test_agent_recovery_controller_rediscovery(initialize):
         report_logger.print_step("STEP 2.3: Recover all Extenders concurrently")
         report_logger.print_info(f"INFO: Recovering {len(extenders)} Extenders in parallel")
         threads = []
-        for index, extender in enumerate(extenders, start=1):
+        for extender in extenders:
             thread = threading.Thread(
                 target=cr_utils.recover_device,
                 kwargs={
@@ -89,7 +89,7 @@ def test_agent_recovery_controller_rediscovery(initialize):
                     "device": extender,
                     "started_at": recovery_started[extender],
                     "results": recovery_times,
-                    "step": f"2.3.{index}",
+                    "step": "2.3",
                     "recovery_type": "agent",
                 },
                 name=f"recover-{extender}",
@@ -100,33 +100,36 @@ def test_agent_recovery_controller_rediscovery(initialize):
             thread.join()
         report_logger.print_info("INFO: Recovery checks have finished for all Extenders")
 
-        report_logger.print_step("STEP 2.4: Validate Extender recovery KPI")
+        report_logger.print_step("STEP 2.4: Validate Extender reachability")
+        reachable_extenders = []
         for extender in extenders:
             result = recovery_times.get(extender)
             if isinstance(result, BaseException):
                 validation_errors.append(f"{extender}: recovery failed: {result}")
                 report_logger.print_error(f"FAIL: {validation_errors[-1]}")
                 continue
-            if result is not None and result is not False and result < AGENT_RECOVERY_KPI_SECONDS:
-                report_logger.print_success(f"PASS: {extender} recovered in {result:.1f}s")
-            else:
+            if result is None or result is False:
                 validation_errors.append(f"{extender}: recovery did not complete within {AGENT_RECOVERY_KPI_SECONDS}s")
                 report_logger.print_error(f"FAIL: {validation_errors[-1]}")
-
-        report_logger.print_step("STEP 2.5: Validate Extender reachability")
-        for extender in extenders:
+                continue
             if not initialize.is_device_alive(extender):
                 validation_errors.append(f"{extender}: Extender is not reachable after reboot")
                 report_logger.print_error(f"FAIL: {validation_errors[-1]}")
             else:
                 report_logger.print_success(f"PASS: {extender} is reachable after reboot")
+                reachable_extenders.append(extender)
+
+        report_logger.print_step("STEP 2.5: Validate recovery KPI for reachable Extenders")
+        for extender in reachable_extenders:
+            result = recovery_times[extender]
+            if result >= AGENT_RECOVERY_KPI_SECONDS:
+                validation_errors.append(f"{extender}: recovery did not complete within {AGENT_RECOVERY_KPI_SECONDS}s")
+                report_logger.print_error(f"FAIL: {validation_errors[-1]}")
+            else:
+                report_logger.print_success(f"PASS: {extender} recovered in {result:.1f}s")
 
         report_logger.print_step("STEP 2.6: Validate Extender parent links")
-        for extender in extenders:
-            result = recovery_times.get(extender)
-            if isinstance(result, BaseException) or result is False or result is None:
-                report_logger.print_error(f"FAIL: {extender} parent check skipped because recovery did not complete")
-                continue
+        for extender in reachable_extenders:
             try:
                 parent, _ = device_utils.get_extender_parent_device(
                     initialize, extender, ["controller", *extenders]
@@ -152,7 +155,7 @@ def test_agent_recovery_controller_rediscovery(initialize):
 
         report_logger.print_step("STEP 2.9: Validate topology messages in the Controller capture")
         packets = reassemble_packets(capture_paths["controller"])
-        for index, extender in enumerate(extenders, start=1):
+        for index, extender in enumerate(reachable_extenders, start=1):
             report_logger.print_step(f"STEP 2.9.{index}: Validate topology traffic for {extender}")
             try:
                 cr_utils.validate_topology_capture(packets, extender, extender_al_macs[extender])
