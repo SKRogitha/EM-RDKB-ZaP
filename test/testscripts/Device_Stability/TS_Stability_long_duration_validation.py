@@ -22,7 +22,7 @@ from stability_utils import *
 from datetime import datetime
 from rdkbmeshzap.common_utils import report_logger
 
-def test_stability_long_duration_validation(initialize, common_setup):
+def test_stability_long_duration_validation(initialize, common_setup, resource_usage_dir):
     """
     Test to verify the stability of the system over a 24-hour period.
     """
@@ -33,8 +33,6 @@ def test_stability_long_duration_validation(initialize, common_setup):
     if timeout <= 0:
         pytest.fail("long duration test timeout must be greater than 0. please update the configuration \"Endurance_test_duration_in_seconds\".")
     report_logger.print_info(f"INFO: Retrieved long duration stability test timeout: {timeout} seconds")
-    resource_usage_dir = Path(__file__).resolve().parent.parent.parent.parent / "Reports" / "Resource_usage_report"
-    resource_usage_dir.mkdir(parents=True, exist_ok=True)
     report_logger.print_step("STEP 2: Start monitoring script in controller")
     initialize.execute_command("controller", "python3 /nvram/monitoring_tool.py &")
     time.sleep(5)
@@ -71,9 +69,6 @@ def test_stability_long_duration_validation(initialize, common_setup):
     initialize.execute_command("controller", "pkill -f monitoring_tool.py")
     report_logger.print_success("PASS: Monitoring script stopped in controller")
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    resource_usage_dir = os.path.join(resource_usage_dir, "test_stability_long_duration_validation_" + str(timestamp))
-    if not os.path.exists(resource_usage_dir):
-        os.makedirs(resource_usage_dir)
     step_count += 1
     sub_step_count = 0
     available_log_files = []

@@ -39,6 +39,7 @@ import time
 from contextlib import redirect_stdout
 from html import escape
 from pathlib import Path
+from datetime import datetime
 
 import zaero
 from zaero.utils import zi_logger
@@ -173,6 +174,23 @@ def test_setup(initialize, verify_test_environment):
 				initialize.ui_stop_playwright("controller")
 			except Exception:
 				pass
+
+@pytest.fixture
+def resource_usage_dir(request):
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    reports_dir = (
+        Path(__file__).resolve().parent.parent
+        / "Reports"
+        / "Resource_usage_report"
+    )
+    reports_dir.mkdir(parents=True, exist_ok=True)
+    test_name = request.node.name
+    resource_usage_dir = (
+        reports_dir / f"{test_name}_{timestamp}"
+    )
+    resource_usage_dir.mkdir(parents=True, exist_ok=True)
+    return str(resource_usage_dir)
+
 
 @pytest.hookimpl(hookwrapper=True)
 def pytest_runtest_setup(item):

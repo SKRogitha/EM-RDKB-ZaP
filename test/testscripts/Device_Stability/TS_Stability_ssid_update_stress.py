@@ -23,7 +23,7 @@ from stability_utils import *
 from datetime import datetime
 from rdkbmeshzap.common_utils import report_logger
 
-def test_stability_ssid_update_stress(initialize, common_setup):
+def test_stability_ssid_update_stress(initialize, common_setup, resource_usage_dir):
     """
     Test to verify the stability of SSID updates over multiple iterations and ensure that all devices correctly reflect the updated SSID.
     """
@@ -34,8 +34,6 @@ def test_stability_ssid_update_stress(initialize, common_setup):
     if ssid_update_max_count <= 0:
         pytest.fail("ssid_update_max_count must be greater than 0. please update the configuration \"ssid_update_max_count\".")
     report_logger.print_info(f"INFO: Retrieved ssid_update_max_count: {ssid_update_max_count}")
-    resource_usage_dir = Path(__file__).resolve().parent.parent.parent.parent / "Reports" / "Resource_usage_report"
-    resource_usage_dir.mkdir(parents=True, exist_ok=True)
     report_logger.print_step("STEP 2: Start monitor_service in controller")
     initialize.execute_command("controller", "python3 /nvram/monitoring_tool.py &")
     report_logger.print_success("PASS: Monitoring script started in controller")
@@ -79,9 +77,6 @@ def test_stability_ssid_update_stress(initialize, common_setup):
     initialize.execute_command("controller", "pkill -f monitoring_tool.py")
     report_logger.print_success("PASS: Monitoring script stopped in controller")
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    resource_usage_dir = os.path.join(resource_usage_dir, "test_stability_ssid_update_stress_" + str(timestamp))
-    if not os.path.exists(resource_usage_dir):
-        os.makedirs(resource_usage_dir)
     step_count += 1
     sub_step_count = 0
     available_log_files = []

@@ -84,7 +84,7 @@ Verify that repeated fronthaul SSID changes (100 changes total) are correctly ap
 2. The Controller and all Extenders are reachable over SSH.
 3. The capture interface, IEEE 1905 filter, remote capture directory, and local capture directory are configured for the Controller and every Extender.
 4. The AL MAC address and profile type are configured for the Controller, collocated Agent, and all Extenders.
-5. `rdkbcli` is available and accessible or the  DE Device.WiFi.DataElements.Network.SetSSID() should be available
+5. `rdkbcli` is available and the Data Elements `Device.WiFi.DataElements.Network.SSID.1.SSID` interface is available for retrieving the SSID.
 
 ---
 
@@ -217,10 +217,10 @@ Verify that repeated security mode changes on the  fronthaul (WPA3 Personal ↔ 
 |-------------|------------|-----------------------------|--------|-----------------|
 | 1 | Retrieve and store the initial security mode configuration as baseline | N/A | N/A | Initial security mode is successfully retrieved and stored for comparison. |
 | 2 | Using `rdkbcli`, set security type to **WPA3 Personal** | N/A | N/A | Security type is successfully set to WPA3 Personal on Controller. |
-| 3 | N/A | N/A | Scan and update WiFi networks (`sudo nmcli device wifi rescan && nmcli device wifi list`) | Client detects the fronthaul SSID with security mode: WPA3 Personal |
+| 3 | N/A | N/A | Scan and update WiFi networks (`sudo nmcli device wifi rescan && nmcli device wifi list`) | Client detects the fronthaul SSID with security mode: WPA3 Personal for controller and extenders |
 | 4 | Using `rdkbcli`, set security type to **WPA3 Transition** | N/A | N/A | Security type is successfully set to WPA3 Transition on Controller. |
-| 5 | N/A | N/A | Scan and update WiFi networks (`sudo nmcli device wifi rescan && nmcli device wifi list`) | Client detects the fronthaul SSID with security mode: WPA3 Transition |
-| 6 | **Repeat steps 2–4 for 49 more cycles** (50 total cycles of WPA3 Personal → WPA3 Transition alternation) | N/A | N/A | All 50 cycles (100 total mode switches) complete successfully with consistent security mode across Controller, EM agents. |
+| 5 | N/A | N/A | Scan and update WiFi networks (`sudo nmcli device wifi rescan && nmcli device wifi list`) | Client detects the fronthaul SSID with security mode: WPA3 Transition for controller and extenders |
+| 6 | **Repeat steps 2–5 for 49 more cycles** (50 total cycles of WPA3 Personal → WPA3 Transition alternation) | N/A | N/A | All 50 cycles (100 total mode switches) complete successfully with consistent security mode across Controller, EM agents. |
 | 7 | Restore the initial security mode | N/A | N/A | N/A |
 
 ---
