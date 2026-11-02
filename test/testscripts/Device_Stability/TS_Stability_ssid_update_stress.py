@@ -29,22 +29,13 @@ def test_stability_ssid_update_stress(initialize, common_setup):
     """
     report_logger.print_test(f"[{get_timestamp()}] Entering test_stability_ssid_update_stress")
     devices = common_setup
-    report_logger.print_step("STEP 1: Retrieving test parameters and local log directory")
+    report_logger.print_step("STEP 1: Retrieving test parameters")
     ssid_update_max_count = initialize.read_from_database("test_parameters", "device_stability", "ssid_update_max_count")
     if ssid_update_max_count <= 0:
         pytest.fail("ssid_update_max_count must be greater than 0. please update the configuration \"ssid_update_max_count\".")
     report_logger.print_info(f"INFO: Retrieved ssid_update_max_count: {ssid_update_max_count}")
-    ctrl_local_dir = initialize.read_from_database("controller", "local_log_directory")
-    if ctrl_local_dir == "</replace/with/local/path>":
-        pytest.fail("Local log directory  is not set. Please update the configuration \"local_log_directory\".")
-    report_logger.print_info(f"INFO: Retrieved local_log_directory: {ctrl_local_dir}")
-    if not os.path.exists(ctrl_local_dir):
-        report_logger.print_info(f"INFO: Local log directory {ctrl_local_dir} does not exist. creating it now.")
-        os.makedirs(ctrl_local_dir)
-        report_logger.print_info(f"INFO: Local log directory {ctrl_local_dir} created successfully.")
-    else:
-        report_logger.print_info(f"INFO: Local log directory {ctrl_local_dir} exists.")
-    report_logger.print_success("PASS: Successfully retrieved local log directory and test parameters")
+    resource_usage_dir = Path(__file__).resolve().parent.parent.parent.parent / "Reports" / "Resource_usage_report"
+    resource_usage_dir.mkdir(parents=True, exist_ok=True)
     report_logger.print_step("STEP 2: Start monitor_service in controller")
     initialize.execute_command("controller", "python3 /nvram/monitoring_tool.py &")
     report_logger.print_success("PASS: Monitoring script started in controller")
@@ -88,9 +79,9 @@ def test_stability_ssid_update_stress(initialize, common_setup):
     initialize.execute_command("controller", "pkill -f monitoring_tool.py")
     report_logger.print_success("PASS: Monitoring script stopped in controller")
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    ctrl_local_dir = os.path.join(ctrl_local_dir, "test_stability_ssid_update_stress_" + str(timestamp))
-    if not os.path.exists(ctrl_local_dir):
-        os.makedirs(ctrl_local_dir)
+    resource_usage_dir = os.path.join(resource_usage_dir, "test_stability_ssid_update_stress_" + str(timestamp))
+    if not os.path.exists(resource_usage_dir):
+        os.makedirs(resource_usage_dir)
     step_count += 1
     sub_step_count = 0
     available_log_files = []
@@ -104,14 +95,14 @@ def test_stability_ssid_update_stress(initialize, common_setup):
             report_logger.print_success(f"PASS: Log file found on controller.")
             sub_step_count += 1
             report_logger.print_step(f"STEP {step_count}.{sub_step_count}: Downloading log file locally and deleting remote file instance.")
-            initialize.get_file("controller", log_file, ctrl_local_dir)
+            initialize.get_file("controller", log_file, resource_usage_dir)
             initialize.execute_command("controller", f"rm -f {log_file}")
             report_logger.print_success(f"PASS: Log file downloaded and deleted the file from controller")
         else:
             report_logger.print_error(f"FAIL: Controller: Log file not found for {process_name}")
     for log_file in available_log_files:
         step_count += 1
-        log_file_path = os.path.join(ctrl_local_dir, log_file)
+        log_file_path = os.path.join(resource_usage_dir, log_file)
         log_analyzer(log_file_path, step_count)
     step_count += 1
     report_logger.print_step(f"STEP {step_count}: Restoring initial SSID on controller")
