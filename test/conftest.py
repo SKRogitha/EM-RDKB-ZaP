@@ -87,9 +87,7 @@ def validate_setup_accessibility(initialize):
 		setup_failure = "Setup Accessibility validation failed"
 		pytest.exit(setup_failure, returncode=1)
 	initialize.accessibility_validated = True
-	report_logger.print_success(
-		"PASS: All configured devices passed accessibility validation"
-	)
+	report_logger.print_success("PASS: All configured devices passed accessibility validation")
 
 @pytest.fixture(scope="session", autouse=True)
 def update_runtime_database(initialize, validate_setup_accessibility):
@@ -211,6 +209,7 @@ def pytest_runtest_makereport(item, call):
 	if not isinstance(playwright_exception, PlaywrightError):
 		playwright_exception = None
 	if report.longrepr:
+		# Preserve traceback details for the custom HTML cell before Console output is shortened.
 		report.user_properties.append(("failure_details", str(report.longrepr)))
 	errors = report_logger.get_error_logs() + zi_logger.get_error_logs()
 	if errors:
@@ -218,9 +217,7 @@ def pytest_runtest_makereport(item, call):
 		report.longrepr = "Error logs found:\n" + "\n".join(errors)
 		report.user_properties.append(("error_logs", "\n".join(errors)))
 	if playwright_exception is not None:
-		report.user_properties.append(
-			("playwright_failure", f"ERROR: {type(playwright_exception).__name__}: {playwright_exception}")
-		)
+		report.user_properties.append(("playwright_failure", f"ERROR: {type(playwright_exception).__name__}: {playwright_exception}"))
 	captured_output = "\n".join(
 		content
 		for section_name, content in report.sections
@@ -236,6 +233,7 @@ def pytest_runtest_makereport(item, call):
 	html_path = item.config.getoption("htmlpath", default=None)
 	if report.failed:
 		if not errors and html_path:
+			# Keep the Console concise; the original traceback remains available in failure_details.
 			report.longrepr = ""
 		try:
 			initialize = item.funcargs.get("initialize")
@@ -253,6 +251,7 @@ def pytest_runtest_makereport(item, call):
 			if diagnostic_result:
 				scenario_dir, diagnostic_paths = diagnostic_result
 				report_dir = Path(html_path).resolve().parent
+				# Link to the device-log folder relative to the generated HTML report.
 				relative_diagnostics = scenario_dir.relative_to(report_dir).as_posix() + "/"
 				report.user_properties.append(
 					(
@@ -311,6 +310,7 @@ def pytest_html_results_table_html(report, data):
 			if name.startswith("failure_diagnostics_link:")
 		]
 		if diagnostics_links:
+			# Escape both link text and URL because these values are inserted into HTML.
 			links_html = "<br>".join(
 				f'<a href="{escape(url, quote=True)}">{escape(label)}</a>'
 				for label, url in diagnostics_links

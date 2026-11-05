@@ -18,7 +18,6 @@
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 import shlex
-from threading import Lock
 import time
 from rdkbmeshzap.common_utils import device_utils, report_logger
 
@@ -36,7 +35,6 @@ EXTENDER_LOG_PATHS_WITH_COMPRESSION = (("/tmp/em_agent.log", True),)
 # Service names checked for each device.
 CONTROLLER_SERVICES = ("em_ctrl", "ieee1905_em_ctrl", "ieee1905_em_agent", "em_agent", "onewifi")
 EXTENDER_SERVICES = ("em_agent", "ieee1905_em_agent", "onewifi")
-DEVICE_CONNECTION_LOCK = Lock()
 
 def stream_log(connection_obj, device, remote_path, local_path, compress=False, remote_command=None):
     """
@@ -51,18 +49,19 @@ def stream_log(connection_obj, device, remote_path, local_path, compress=False, 
         remote_command - Optional command that writes the log data to stdout.
     Return Value: None. Raises an exception when the transfer fails or times out.
     """
-    # Use the device-specific client so parallel transfers avoid shared alias switching.
+    # Will replace this with a public streaming API when the SSH module is extended.
     connection_registry = getattr(type(connection_obj), "_SshInterface__objects")
     ssh_client = connection_registry[device]["client"]
     transport = ssh_client.get_transport()
     if transport is None or not transport.is_active():
         raise RuntimeError(f"SSH transport for {device} is not active")
     deadline = time.monotonic() + LOG_TRANSFER_DEADLINE_SECONDS
-    last_activity = time.monotonic()
     partial_path = local_path.with_name(local_path.name + ".part")
     # Preserve remote command errors for the transfer failure message.
     error_output = bytearray()
+    # Give this transfer its own channel on the device transport.
     channel = transport.open_session(timeout=LOG_TRANSFER_SOCKET_TIMEOUT)
+    last_activity = time.monotonic()
     try:
         if remote_command is None:
             command = "gzip -c" if compress else "cat"
@@ -95,7 +94,7 @@ def stream_log(connection_obj, device, remote_path, local_path, compress=False, 
         if exit_status != 0:
             error_message = error_output.decode("utf-8", errors="replace").strip()
             raise RuntimeError(f"Remote log command failed with exit status {exit_status}{': ' + error_message if error_message else ''}")
-        # Publish the file only after the remote command succeeds.
+        # Publish only complete output; failures remove the partial file below.
         partial_path.replace(local_path)
     except Exception:
         partial_path.unlink(missing_ok=True)
@@ -159,7 +158,7 @@ def collect_device_failure_diagnostics(initialize, scenario_dir, device):
         if device == "controller"
         else EXTENDER_LOG_PATHS_WITH_COMPRESSION
     )
-    # Transfer this device's full logs concurrently to reduce collection time.
+    # Snapshot all configured logs in parallel before collecting live command state.
     with ThreadPoolExecutor(max_workers=len(log_paths_with_compression) + 1) as executor:
         transfers = {}
         for remote_path, compress in log_paths_with_compression:
@@ -180,6 +179,7 @@ def collect_device_failure_diagnostics(initialize, scenario_dir, device):
                 ),
             )
         ] = ("OneWifi logs in /rdklogs/logs", onewifi_local_path)
+        # A failed log is recorded, but does not prevent other diagnostics from being collected.
         for future in as_completed(transfers):
             remote_path, local_path = transfers[future]
             try:
@@ -192,15 +192,13 @@ def collect_device_failure_diagnostics(initialize, scenario_dir, device):
                 debug_sections.append(f"{message}\n")
     # Capture service and interface state after the log snapshot.
     try:
-        with DEVICE_CONNECTION_LOCK:
-            connection_obj.switch_connection(device)
-            services = CONTROLLER_SERVICES if device == "controller" else EXTENDER_SERVICES
-            debug_sections.append("\n--- Services checked ---\n" + "\n".join(services) + "\n")
-            service_command = " ".join(services)
-            record_command_output(debug_sections, "systemctl status", lambda: connection_obj.execute_command(f"systemctl status {service_command} --no-pager 2>&1", return_stderr=True))
-            record_command_output(debug_sections, "iw dev", lambda: initialize.get_iw_dev_info(device, method="cli"))
-            record_command_output(debug_sections, "ifconfig", lambda: connection_obj.execute_command("ifconfig 2>&1", return_stderr=True))
-            record_command_output(debug_sections, "version.txt", lambda: connection_obj.execute_command("cat /version.txt 2>&1", return_stderr=True))
+        services = CONTROLLER_SERVICES if device == "controller" else EXTENDER_SERVICES
+        debug_sections.append("\n--- Services checked ---\n" + "\n".join(services) + "\n")
+        service_command = " ".join(services)
+        record_command_output(debug_sections, "systemctl status", lambda: connection_obj.execute_command(device, f"systemctl status {service_command} --no-pager 2>&1", return_stderr=True))
+        record_command_output(debug_sections, "iw dev", lambda: initialize.get_iw_dev_info(device, method="cli"))
+        record_command_output(debug_sections, "ifconfig", lambda: connection_obj.execute_command(device, "ifconfig 2>&1", return_stderr=True))
+        record_command_output(debug_sections, "version.txt", lambda: connection_obj.execute_command(device, "cat /version.txt 2>&1", return_stderr=True))
     except Exception as error:
         message = f"FAIL: {device}: command diagnostics failed: {error!r}"
         report_logger.print_error(message)
