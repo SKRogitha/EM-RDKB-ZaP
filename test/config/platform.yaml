@@ -76,7 +76,6 @@ controller:
     2g_radio_mac: aa:bb:cc:dd:ee:ff                         # Dynamically discovered 2.4 GHz radio MAC address
     5g_radio_mac: aa:bb:cc:dd:ee:ff                         # Dynamically discovered 5 GHz radio MAC address
     6g_radio_mac: aa:bb:cc:dd:ee:ff                         # Dynamically discovered 6 GHz radio MAC address
-    local_log_directory: </replace/with/local/path>
          
 extender1:
     bridge_iface: 'brlan0'                                  # LAN bridge interface used by Extender 1
