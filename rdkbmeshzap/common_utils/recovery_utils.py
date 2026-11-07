@@ -42,6 +42,27 @@ def get_recovery_kpi(initialize, recovery_type="controller"):
         raise ValueError(f"Unsupported recovery type: {recovery_type}")
     return int(initialize.read_from_database("test_parameters", parameter))
 
+def print_recovery_summary(extenders, recovered_extenders, step="STEP 3", scope="after reboot", failed_cycles=None):
+    """
+    Syntax: print_recovery_summary(extenders, recovered_extenders, step="STEP 3", scope="after reboot", failed_cycles=None)
+    Description: Print the final recovery status for each configured Extender.
+    Parameters: extenders - Configured Extender names; recovered_extenders - Extenders that met the recovery criteria;
+                step - Report step label; scope - Recovery period description;
+                failed_cycles - Optional mapping of Extender names to their first failed cycle.
+    Return Value: None.
+    Example: print_recovery_summary(extenders, recovered_extenders, scope="across 2 reboot cycles")
+    """
+    report_logger.print_step(f"{step}: Final Extender recovery summary")
+    for extender in extenders:
+        if extender in recovered_extenders:
+            report_logger.print_success(f"PASS: {extender} was reachable and met the recovery KPI {scope}")
+        else:
+            failure_cycle = (failed_cycles or {}).get(extender)
+            if failure_cycle is not None:
+                report_logger.print_error(f"FAIL: {extender} did not meet the recovery criteria in cycle {failure_cycle}")
+            else:
+                report_logger.print_error(f"FAIL: {extender} did not meet the recovery criteria {scope}")
+
 def reconnect_device(initialize, device, step, started_at=None, recovery_type="controller"):
     """
     Syntax: reconnect_device(initialize, device, step, started_at=None, recovery_type="controller")

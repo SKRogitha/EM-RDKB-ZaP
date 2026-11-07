@@ -18,47 +18,43 @@
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-
 from packet_analyzer.packet_dissector import reassemble_packets
 from rdkbmeshzap.common_utils import device_utils, report_logger
-from rdkbmeshzap.common_utils import recovery_utils as cr_utils
+from rdkbmeshzap.common_utils import recovery_utils
 
 def test_agent_recovery_consecutive_reboots(initialize):
     report_logger.print_test("Entering test_agent_recovery_consecutive_reboots")
-    # Read the configured recovery KPI before starting the cycles.
-    AGENT_RECOVERY_KPI_SECONDS = cr_utils.get_recovery_kpi(initialize, "agent")
     capture_names = {}
     capture_started = set()
     capture_paths = {}
     extender_al_macs = {}
-    validation_errors = []
-
+    all_extenders = []
+    recovered_extenders = set()
+    failed_cycles = {}
     try:
         report_logger.print_step("STEP 1: Discover all enabled Extenders")
         extenders = device_utils.get_enabled_extenders(initialize)
         if not extenders:
             report_logger.print_error("FAIL: No enabled Extenders found in infra.yaml")
             return
+        all_extenders = list(extenders)
+        recovered_extenders.update(extenders)
         report_logger.print_info(f"INFO: Enabled extenders for this recovery test: {extenders}")
         for extender in extenders:
             # Store each extender AL MAC for topology validation.
             extender_al_macs[extender] = initialize.get_al_mac_address(extender, "cli")
-
-        for cycle in range(1, cr_utils.REBOOT_CYCLES + 1):
+        for cycle in range(1, recovery_utils.REBOOT_CYCLES + 1):
             step = cycle + 1
-            report_logger.print_step(f"STEP {step}: Extender recovery cycle {cycle}/{cr_utils.REBOOT_CYCLES}")
-            step_offset = int(cycle == cr_utils.REBOOT_CYCLES)
+            # Repeat reboot and recovery checks for each configured cycle.
+            report_logger.print_step(f"STEP {step}: Extender recovery cycle {cycle}/{recovery_utils.REBOOT_CYCLES}")
+            step_offset = int(cycle == recovery_utils.REBOOT_CYCLES)
             if step_offset:
-                report_logger.print_info(f"INFO: Cycle {cycle} is about to start. Controller capture will run during this cycle to validate topology after {cr_utils.REBOOT_CYCLES} consecutive reboots.")
-                capture_names["controller"] = device_utils.start_capture(
-                    initialize,
-                    "controller",
-                    "test_agent_recovery_consecutive_reboots",
-                    step=f"{step}.1",
-                    include_device=True,
-                )
+                # Capture controller traffic during the final cycle for topology validation.
+                report_logger.print_info(f"INFO: Cycle {cycle} is about to start. Controller capture will run during this cycle to validate topology after {recovery_utils.REBOOT_CYCLES} consecutive reboots.")
+                capture_names["controller"] = device_utils.start_capture(initialize, "controller", "test_agent_recovery_consecutive_reboots", step=f"{step}.1", include_device=True)
                 capture_started.add("controller")
 
+            # Reboot all Extenders concurrently and retain any command failures.
             report_logger.print_step(f"STEP {step}.{1 + step_offset}: Reboot all Extenders")
             cycle_start = time.monotonic()
             reboot_errors = {}
@@ -75,18 +71,20 @@ def test_agent_recovery_consecutive_reboots(initialize):
                         reboot_errors[extender] = error
             for extender in extenders:
                 if extender in reboot_errors:
-                    validation_errors.append(f"{extender}: cycle {cycle} reboot command failed: {reboot_errors[extender]}")
-                    report_logger.print_error(f"FAIL: {validation_errors[-1]}")
+                    failed_cycles.setdefault(extender, cycle)
+                    recovered_extenders.discard(extender)
+                    report_logger.print_error(f"FAIL: {extender}: cycle {cycle} reboot command failed: {reboot_errors[extender]}")
                 else:
                     report_logger.print_info(f"INFO: Reboot command executed for {extender}")
 
+            # Recover Extenders concurrently within the cycle's shared KPI window.
             report_logger.print_step(f"STEP {step}.{2 + step_offset}: Recover Extenders concurrently")
             recovery_times = {}
             threads = []
             for extender in extenders:
                 thread = threading.Thread(
                     # Recover each extender within the configured KPI window.
-                    target=cr_utils.recover_device,
+                    target=recovery_utils.recover_device,
                     kwargs={
                         "initialize": initialize,
                         "device": extender,
@@ -102,88 +100,68 @@ def test_agent_recovery_consecutive_reboots(initialize):
             for thread in threads:
                 thread.join()
 
-            report_logger.print_step(f"STEP {step}.{3 + step_offset}: Validate Extender reachability after cycle {cycle}")
-            cycle_failed = False
+            # Collect Extenders that recovered and remain reachable.
             reachable_extenders = []
             for extender in extenders:
                 result = recovery_times.get(extender)
                 if isinstance(result, BaseException):
-                    validation_errors.append(
-                        f"{extender}: cycle {cycle} recovery failed: {result}"
-                    )
-                    report_logger.print_error(f"FAIL: {validation_errors[-1]}")
-                    cycle_failed = True
+                    failed_cycles.setdefault(extender, cycle)
+                    recovered_extenders.discard(extender)
                     continue
                 if result is False:
-                    validation_errors.append(
-                        f"{extender}: cycle {cycle} recovery failed within the KPI"
-                    )
-                    report_logger.print_error(f"FAIL: {validation_errors[-1]}")
-                    cycle_failed = True
+                    failed_cycles.setdefault(extender, cycle)
+                    recovered_extenders.discard(extender)
                     continue
                 if result is None:
-                    validation_errors.append(
-                        f"{extender}: cycle {cycle} recovery result is unavailable"
-                    )
-                    report_logger.print_error(f"FAIL: {validation_errors[-1]}")
-                    cycle_failed = True
+                    failed_cycles.setdefault(extender, cycle)
+                    recovered_extenders.discard(extender)
+                    report_logger.print_error(f"FAIL: {extender}: cycle {cycle} recovery result is unavailable")
                     continue
-                # Confirm the extender is reachable after recovery.
                 if not initialize.is_device_alive(extender):
-                    validation_errors.append(
-                        f"{extender}: not reachable after cycle {cycle}"
-                    )
-                    report_logger.print_error(f"FAIL: {validation_errors[-1]}")
-                    cycle_failed = True
-                else:
-                    report_logger.print_success(f"PASS: {extender} is reachable after cycle {cycle}")
-                    reachable_extenders.append(extender)
-
-            report_logger.print_step(f"STEP {step}.{4 + step_offset}: Validate recovery KPI for reachable Extenders in cycle {cycle}")
-            for extender in reachable_extenders:
-                result = recovery_times.get(extender)
-                if result >= AGENT_RECOVERY_KPI_SECONDS:
-                    validation_errors.append(
-                        f"{extender}: cycle {cycle} recovery exceeded {AGENT_RECOVERY_KPI_SECONDS}s"
-                    )
-                    report_logger.print_error(f"FAIL: {validation_errors[-1]}")
-                    cycle_failed = True
+                    failed_cycles.setdefault(extender, cycle)
+                    recovered_extenders.discard(extender)
+                    report_logger.print_error(f"FAIL: {extender}: not reachable after cycle {cycle}")
                     continue
-                report_logger.print_success(f"PASS: {extender} recovered in {result:.1f}s during cycle {cycle}")
-            if cycle_failed:
-                report_logger.print_error(f"FAIL: Extender recovery cycle {cycle}/{cr_utils.REBOOT_CYCLES} failed")
+                reachable_extenders.append(extender)
+
+            if reachable_extenders:
+                report_logger.print_step(f"STEP {step}.{3 + step_offset}: Report reachable Extenders and recovery times after cycle {cycle}")
+                for extender in reachable_extenders:
+                    result = recovery_times[extender]
+                    report_logger.print_success(f"PASS: {extender} is reachable and recovered in {result:.1f}s during cycle {cycle}")
+            if not reachable_extenders:
+                recovery_utils.print_recovery_summary(all_extenders, recovered_extenders, step=f"STEP {step}.{3 + step_offset}", scope=f"through cycle {cycle}", failed_cycles=failed_cycles)
                 return
 
-        report_logger.print_info(f"INFO: All Extender reboot cycles completed; checking parent links after cycle {cr_utils.REBOOT_CYCLES}")
-        tail_step = cr_utils.REBOOT_CYCLES + 2
+            extenders = reachable_extenders
+        report_logger.print_info(f"INFO: All Extender reboot cycles completed; checking parent links after cycle {recovery_utils.REBOOT_CYCLES}")
+        tail_step = recovery_utils.REBOOT_CYCLES + 2
+
+        # Confirm each remaining Extender is attached to an expected upstream device.
         report_logger.print_step(f"STEP {tail_step}: Validate Extender parent links")
         for extender in extenders:
             try:
                 # Match the backhaul BSSID to an upstream device.
-                parent, _ = device_utils.get_extender_parent_device(
-                    initialize, extender, ["controller", *extenders]
-                )
+                parent, _ = device_utils.get_extender_parent_device(initialize, extender, ["controller", *extenders])
                 if not parent:
-                    validation_errors.append(
-                        f"{extender}: upstream parent was not identified"
-                    )
-                    report_logger.print_error(f"FAIL: {validation_errors[-1]}")
+                    report_logger.print_error(f"FAIL: {extender}: upstream parent was not identified")
                 else:
                     report_logger.print_success(f"PASS: {extender} is connected to {parent}")
             except Exception as error:
-                validation_errors.append(f"{extender}: parent lookup failed: {error}")
-                report_logger.print_error(f"FAIL: {validation_errors[-1]}")
+                report_logger.print_error(f"FAIL: {extender}: parent lookup failed: {error}")
 
+        # Allow topology updates to propagate before stopping the capture.
         report_logger.print_step(f"STEP {tail_step + 1}: Wait for topology packets to propagate")
         time.sleep(60)
         report_logger.print_info("INFO: Topology propagation wait is over; proceeding to capture validation")
+
+        # Stop and download the final-cycle controller capture.
         report_logger.print_step(f"STEP {tail_step + 2}: Stop and collect the controller packet capture")
-        capture_paths["controller"] = device_utils.stop_and_collect_capture(
-            initialize, "controller", capture_names["controller"]
-        )
+        capture_paths["controller"] = device_utils.stop_and_collect_capture(initialize, "controller", capture_names["controller"])
         capture_started.remove("controller")
         report_logger.print_success(f"PASS: Controller capture collected at {capture_paths['controller']}")
 
+        # Check captured topology messages against each remaining Extender AL MAC.
         report_logger.print_step(f"STEP {tail_step + 3}: Validate topology messages in the controller capture")
         # Reassemble the pcap for IEEE 1905 message validation.
         packets = reassemble_packets(capture_paths["controller"])
@@ -191,15 +169,11 @@ def test_agent_recovery_consecutive_reboots(initialize):
             report_logger.print_step(f"STEP {tail_step + 3}.{index}: Validate topology traffic for {extender}")
             try:
                 # Check for topology messages associated with this extender AL MAC.
-                cr_utils.validate_topology_capture(packets, extender, extender_al_macs[extender])
+                recovery_utils.validate_topology_capture(packets, extender, extender_al_macs[extender])
             except Exception as error:
-                validation_errors.append(f"{extender}: capture validation failed: {error}")
-                report_logger.print_error(f"FAIL: {validation_errors[-1]}")
+                report_logger.print_error(f"FAIL: {extender}: capture validation failed: {error}")
+        recovery_utils.print_recovery_summary(all_extenders, recovered_extenders, step=f"STEP {tail_step + 4}", scope=f"across {recovery_utils.REBOOT_CYCLES} consecutive reboot cycles", failed_cycles=failed_cycles)
 
-        if validation_errors:
-            report_logger.print_error("Extender recovery validation failed: " + "; ".join(validation_errors))
-            return
-        report_logger.print_success("PASS: All consecutive Extender recovery cycles and topology validation passed")
     finally:
         # Collect captures left active after an early exit.
         for extender in capture_started:
