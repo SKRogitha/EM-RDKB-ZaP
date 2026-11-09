@@ -22,6 +22,9 @@ from rdkbmeshzap.common_utils import device_utils, report_logger
 from rdkbmeshzap.common_utils import recovery_utils
 
 def test_controller_recovery_extender_reconnection(initialize):
+    """
+    Verify the Controller and all Extenders recover within the KPI after a Controller reboot.
+    """
     report_logger.print_test("Entering test_controller_recovery_extender_reconnection")
     capture_names = {}
     capture_started = set()

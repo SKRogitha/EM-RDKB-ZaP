@@ -23,6 +23,9 @@ from rdkbmeshzap.common_utils import device_utils, report_logger
 from rdkbmeshzap.common_utils import recovery_utils
 
 def test_agent_recovery_consecutive_reboots(initialize):
+    """
+    Verify all Extenders meet the recovery KPI across consecutive reboot cycles.
+    """
     report_logger.print_test("Entering test_agent_recovery_consecutive_reboots")
     capture_names = {}
     capture_started = set()

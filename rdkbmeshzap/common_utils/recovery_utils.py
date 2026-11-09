@@ -30,7 +30,9 @@ def get_recovery_kpi(initialize, recovery_type="controller"):
     """
     Syntax: get_recovery_kpi(initialize, recovery_type="controller")
     Description: Return the configured recovery KPI for the selected recovery type.
-    Parameters: initialize - Testbed interface; recovery_type - "controller" or "agent".
+    Parameters:
+        initialize : Testbed interface.
+        recovery_type : "controller" or "agent".
     Return Value: Recovery KPI in seconds as an integer.
     Example: get_recovery_kpi(initialize, "agent")
     """
@@ -46,9 +48,12 @@ def print_recovery_summary(extenders, recovered_extenders, step="STEP 3", scope=
     """
     Syntax: print_recovery_summary(extenders, recovered_extenders, step="STEP 3", scope="after reboot", failed_cycles=None)
     Description: Print the final recovery status for each configured Extender.
-    Parameters: extenders - Configured Extender names; recovered_extenders - Extenders that met the recovery criteria;
-                step - Report step label; scope - Recovery period description;
-                failed_cycles - Optional mapping of Extender names to their first failed cycle.
+    Parameters:
+        extenders : Configured Extender names.
+        recovered_extenders : Extenders that met the recovery criteria.
+        step : Report step label.
+        scope : Recovery period description.
+        failed_cycles : Optional mapping of Extender names to their first failed cycle.
     Return Value: None.
     Example: print_recovery_summary(extenders, recovered_extenders, scope="across 2 reboot cycles")
     """
@@ -67,8 +72,12 @@ def reconnect_device(initialize, device, step, started_at=None, recovery_type="c
     """
     Syntax: reconnect_device(initialize, device, step, started_at=None, recovery_type="controller")
     Description: Reconnect a device within its configured recovery KPI window.
-    Parameters: initialize - Testbed interface; device - Device name; step - Report step;
-                started_at - Optional recovery start time; recovery_type - "controller" or "agent".
+    Parameters:
+        initialize : Testbed interface.
+        device : Device name.
+        step : Report step.
+        started_at : Optional recovery start time.
+        recovery_type : "controller" or "agent".
     Return Value: True on success; False when recovery times out.
     Example: reconnect_device(initialize, "extender1", 1, recovery_type="agent")
     """
@@ -109,8 +118,13 @@ def recover_device(initialize, device, started_at, results, step, recovery_type=
     """
     Syntax: recover_device(initialize, device, started_at, results, step, recovery_type="controller")
     Description: Reconnect a device, verify services, and record its recovery time.
-    Parameters: initialize - Testbed interface; device - Device name; started_at - Recovery start time;
-                results - Result dictionary; step - Report step; recovery_type - "controller" or "agent".
+    Parameters:
+        initialize : Testbed interface.
+        device : Device name.
+        started_at : Recovery start time.
+        results : Result dictionary.
+        step : Report step.
+        recovery_type : "controller" or "agent".
     Return Value: Recovery time in seconds, False when recovery fails, or the captured exception.
     Example: recover_device(initialize, "extender1", started_at, results, 1, "agent")
     """
@@ -148,7 +162,10 @@ def validate_topology_capture(packets, extender, extender_al_mac=None):
     """
     Syntax: validate_topology_capture(packets, extender, extender_al_mac=None)
     Description: Require topology query and response messages in a recovery capture.
-    Parameters: packets - Decoded packets; extender - Extender name; extender_al_mac - Optional AL MAC filter.
+    Parameters:
+        packets : Decoded packets.
+        extender : Extender name.
+        extender_al_mac : Optional AL MAC filter.
     Return Value: None; reports missing or present topology messages.
     Example: validate_topology_capture(packets, "extender1")
     """

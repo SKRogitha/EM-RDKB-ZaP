@@ -23,6 +23,9 @@ from rdkbmeshzap.common_utils import device_utils, report_logger
 from rdkbmeshzap.common_utils import recovery_utils
 
 def test_controller_recovery_consecutive_reboots(initialize):
+    """
+    Verify the Controller recovers within the configured KPI across five consecutive reboot cycles.
+    """
     report_logger.print_test("Entering test_controller_recovery_consecutive_reboots")
     capture_names = {}
     capture_started = set()

@@ -23,6 +23,9 @@ from rdkbmeshzap.common_utils import device_utils, report_logger
 from rdkbmeshzap.common_utils import recovery_utils
 
 def test_agent_recovery_controller_rediscovery(initialize):
+    """
+    Verify all Extenders recover within the KPI and are rediscovered by the Controller.
+    """
     report_logger.print_test("Entering test_agent_recovery_controller_rediscovery")
     capture_names = {}
     capture_started = set()
