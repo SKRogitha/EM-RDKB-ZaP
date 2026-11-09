@@ -148,14 +148,14 @@ def recover_device(initialize, device, started_at, results, step, recovery_type=
         recovery_time = time.monotonic() - started_at
         if recovery_time >= recovery_kpi:
             results[device] = False
-            report_logger.print_error(f"{device}: recovery exceeded {recovery_kpi} seconds")
+            report_logger.print_error(f"FAIL: {device}: recovery exceeded {recovery_kpi} seconds")
             return False
         results[device] = recovery_time
         report_logger.print_success(f"PASS: {device} connection restored in {recovery_time:.1f}s")
         return recovery_time
     except Exception as error:
         results[device] = error
-        report_logger.print_error(f"{device}: recovery failed with error: {error}")
+        report_logger.print_error(f"FAIL: {device}: recovery failed with error: {error}")
         return error
 
 def validate_topology_capture(packets, extender, extender_al_mac=None):

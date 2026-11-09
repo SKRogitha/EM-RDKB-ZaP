@@ -111,11 +111,11 @@ def test_controller_recovery_consecutive_reboots(initialize):
                 continue
             if recovery_result is None:
                 failed_cycles[extender] = recovery_utils.REBOOT_CYCLES
-                report_logger.print_error(f"{extender}: no recovery result was recorded")
+                report_logger.print_error(f"FAIL: {extender}: no recovery result was recorded")
                 continue
             if not initialize.is_device_alive(extender):
                 failed_cycles[extender] = recovery_utils.REBOOT_CYCLES
-                report_logger.print_error(f"{extender}: extender is not reachable after controller reboot")
+                report_logger.print_error(f"FAIL: {extender}: extender is not reachable after controller reboot")
                 continue
             recovered_extenders.append(extender)
         if recovered_extenders:
@@ -142,7 +142,7 @@ def test_controller_recovery_consecutive_reboots(initialize):
                 capture_started.remove(extender)
                 packets_by_extender[extender] = local_path
             except Exception as error:
-                error_message = f"{extender}: capture collection failed: {error}"
+                error_message = f"FAIL: {extender}: capture collection failed: {error}"
                 report_logger.print_error(error_message)
 
         report_logger.print_step("STEP 12: Validate topology exchange packets for recovered extenders")
@@ -154,7 +154,7 @@ def test_controller_recovery_consecutive_reboots(initialize):
                 packets = reassemble_packets(local_path)
                 recovery_utils.validate_topology_capture(packets, extender, extender_al_macs[extender])
             except Exception as error:
-                error_message = f"{extender}: topology traffic check failed: {error}"
+                error_message = f"FAIL: {extender}: topology traffic check failed: {error}"
                 report_logger.print_error(error_message)
 
         report_logger.print_step("STEP 13: Identify the parent device of each recovered extender after the controller reboot")
@@ -165,9 +165,9 @@ def test_controller_recovery_consecutive_reboots(initialize):
                 if parent:
                     report_logger.print_success(f"PASS: {extender} is connected to {parent}")
                 else:
-                    report_logger.print_error(f"{extender}: could not identify its upstream device")
+                    report_logger.print_error(f"FAIL: {extender}: could not identify its upstream device")
             except Exception as error:
-                report_logger.print_error(f"{extender}: failed to look up its parent device: {error}")
+                report_logger.print_error(f"FAIL: {extender}: failed to look up its parent device: {error}")
 
         recovery_utils.print_recovery_summary(all_extenders, recovered_extenders, step="STEP 14", scope=f"across {recovery_utils.REBOOT_CYCLES} consecutive controller reboot cycles", failed_cycles=failed_cycles)
 
@@ -180,5 +180,5 @@ def test_controller_recovery_consecutive_reboots(initialize):
                 # Always clean up captures that were started but not collected.
                 device_utils.stop_and_collect_capture(initialize, extender, capture_name)
             except Exception as error:
-                report_logger.print_error(f"Could not stop {extender} capture during cleanup: {error}")
+                report_logger.print_error(f"FAIL: Could not stop {extender} capture during cleanup: {error}")
         report_logger.print_test("Exiting test_controller_recovery_consecutive_reboots")
