@@ -97,14 +97,15 @@ class FeatureInterface(FeatureInterfaceModules):
         iface_obj = self.get_feature_interface_module_object(method)
         return iface_obj.get_iw_dev_link_info(device, iface)
 
-    def get_iw_interface_details(
-        self, device: str, interface: str, method: str = 'cli') -> dict:
+    def get_iw_interface_details(self, device: str, interface: str, method: str = 'cli', iw_dev_output: str | None = None) -> dict:
         """
         Get normalized details for a Wi-Fi interface from ``iw dev`` output.
         """
         zi_logger.print_context()
         iface_obj = self.get_feature_interface_module_object(method)
-        return iface_obj.get_iw_interface_details(device, interface)
+        if iw_dev_output is None:
+            return iface_obj.get_iw_interface_details(device, interface)
+        return iface_obj.get_iw_interface_details(device, interface, iw_dev_output=iw_dev_output)
 
     def get_iw_link_details(self, device: str, interface: str, value: str, method: str = 'cli') -> list:
         """
@@ -548,3 +549,19 @@ class FeatureInterface(FeatureInterfaceModules):
         zi_logger.print_context()
         iface_obj = self.get_feature_interface_module_object(method)
         return iface_obj.get_device_index(device, device_mac)
+
+    def get_bridge_info(self, device: str, bridge_iface: str, method: str = 'cli') -> str:
+        """
+        Get the interfaces of a device bridge using `brctl show`.
+        """
+        zi_logger.print_context()
+        iface_obj = self.get_feature_interface_module_object(method)
+        return iface_obj.get_bridge_info(device, bridge_iface)
+
+    def get_bridge_station_interfaces(self, device: str, bridge_iface: str, method: str = 'cli') -> list[str]:
+        """
+        Get wireless station interfaces attached to a device bridge.
+        """
+        zi_logger.print_context()
+        iface_obj = self.get_feature_interface_module_object(method)
+        return iface_obj.get_bridge_station_interfaces(device, bridge_iface)

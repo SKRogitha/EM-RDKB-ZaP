@@ -144,12 +144,31 @@ class FeatureInterfaceCLI(DatabaseModule,
             )
         return str(output).strip()
 
-    def get_iw_interface_details(self, device: str, interface: str) -> dict:
+    def get_iw_interface_details(self, device: str, interface: str, iw_dev_output: str | None = None) -> dict:
         """
         Return normalized interface, link, MAC, and radio details from ``iw dev`` output.
         """
-        output = self.get_iw_dev_interface_info(device, interface)
-        lines = [line.strip() for line in str(output or "").splitlines()]
+        output = (
+            iw_dev_output
+            if iw_dev_output is not None
+            else self.get_iw_dev_interface_info(device, interface)
+        )
+        all_lines = [line.strip() for line in str(output or "").splitlines()]
+        if iw_dev_output is not None:
+            start = next(
+                (index for index, line in enumerate(all_lines) if line == f"Interface {interface}"),
+                None,
+            )
+            if start is None:
+                lines = []
+            else:
+                end = next(
+                    (index for index in range(start + 1, len(all_lines)) if all_lines[index].startswith("Interface ")),
+                    len(all_lines),
+                )
+                lines = all_lines[start:end]
+        else:
+            lines = all_lines
         fields = {
             key: value.strip()
             for line in lines if " " in line
@@ -699,3 +718,39 @@ class FeatureInterfaceCLI(DatabaseModule,
             raise RuntimeError(f"Command execution failed : {output}")
         
         return output.split()[2]
+
+    def get_bridge_info(self, device: str, bridge_iface: str) -> str:
+        """
+        Get the interfaces attached to the specified bridge.
+        """
+        zi_logger.print_context()
+        connection = self.db_obj.read_from_database(device, 'connection')
+        connection_obj = self.get_connection_module_object(connection)
+        command = f"brctl show {shlex.quote(bridge_iface)}"
+        output, error = connection_obj.execute_command(device, command, return_stderr=True)
+        if error:
+            raise RuntimeError(f"Command execution failed: {command}. stderr: {error.strip()}")
+        return str(output).strip()
+
+    def get_bridge_station_interfaces(self, device: str, bridge_iface: str) -> list[str]:
+        """
+        Return wireless station interfaces attached to the specified bridge.
+        """
+        interfaces = []
+        bridge_found = False
+        for line in self.get_bridge_info(device, bridge_iface).splitlines():
+            fields = line.split()
+            if not fields or fields[0] == "bridge":
+                continue
+            if fields[0].startswith("br"):
+                bridge_found = fields[0] == bridge_iface
+                if bridge_found:
+                    candidate = fields[-1]
+                    if candidate.startswith("wifi") and ".sta" in candidate:
+                        interfaces.append(candidate)
+                continue
+            if bridge_found:
+                candidate = fields[-1]
+                if candidate.startswith("wifi") and ".sta" in candidate:
+                    interfaces.append(candidate)
+        return list(dict.fromkeys(interfaces))

@@ -129,9 +129,7 @@ def recover_device(initialize, device, started_at, results, step, recovery_type=
     Example: recover_device(initialize, "extender1", started_at, results, 1, "agent")
     """
     try:
-        reconnected = reconnect_device(
-            initialize, device, step=f"{step}.1", started_at=started_at, recovery_type=recovery_type
-        )
+        reconnected = reconnect_device(initialize, device, step=f"{step}.1", started_at=started_at, recovery_type=recovery_type)
         if reconnected is False:
             results[device] = False
             return False

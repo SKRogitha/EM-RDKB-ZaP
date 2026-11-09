@@ -320,25 +320,46 @@ def verify_extender_services(initialize, extender, deadline=None):
         deadline,
     ) 
 
-def get_extender_parent_device(initialize, extender, devices):
+def get_extender_parent_device(initialize, extender, devices, iw_dev_snapshot=None):
     """
     Syntax: get_extender_parent_device(initialize, extender, devices)
-    Description: Identify the testbed device providing the extender's connected backhaul BSSID.
+    Description: Find the device hosting the mesh-backhaul AP connected to the extender.
     Parameters: initialize - Testbed interface; extender - Extender name; devices - Candidate parent devices.
     Return Value: A tuple containing the parent device name and connected BSSID, or None values when unavailable.
     Example: get_extender_parent_device(initialize, "extender1", ["controller", "extender1"])
     """
-    link_output = initialize.get_iw_dev_link_info(extender, "wifi1.3")
-    match = re.search(r"Connected to\s+([0-9a-fA-F:]{17})", str(link_output), re.IGNORECASE)
-    if not match:
+    try:
+        backhaul_interface = initialize.read_from_database(extender, "backhaul_interface")
+    except Exception as error:
+        report_logger.print_error(f"FAIL: {extender}: unable to read backhaul_interface: {error}")
         return None, None
-    bssid = match.group(1).lower()
+    if not backhaul_interface:
+        return None, None
+    try:
+        bssids = initialize.get_iw_link_details(extender, backhaul_interface, "bssid")
+    except Exception as error:
+        report_logger.print_error(f"FAIL: {extender}: unable to read backhaul BSSID on {backhaul_interface}: {error}")
+        return None, None
+    if not bssids:
+        return None, None
+    bssid = str(bssids[0]).lower()
+
     for device in devices:
         try:
-            output = initialize.get_iw_dev_interface_info(device, "wifi1.1")
-        except Exception:
+            interface_details = (
+                iw_dev_snapshot.get(device, {})
+                if iw_dev_snapshot is not None
+                else parse_iw_dev_output(initialize.get_iw_dev_info(device))
+            )
+        except Exception as error:
+            report_logger.print_info(f"INFO: {device}: unable to read wireless interfaces: {error}")
             continue
-        if re.search(rf"\baddr\s+{re.escape(bssid)}\b", str(output), re.IGNORECASE):
+        if any(
+            details["addr"] == bssid
+            and details["ssid"] == "mesh_backhaul"
+            and details["type"].lower() == "ap"
+            for details in interface_details.values()
+        ):
             return device, bssid
     return None, bssid
 
@@ -368,3 +389,30 @@ def retrieve_and_store_device_index(initialize, device, device_mac):
     index = initialize.get_device_index("controller", device_mac, "de")
     initialize.db_obj.write_into_database("controller", f"{device}_device_index",index)
     return index
+
+def parse_iw_dev_output(output: str) -> dict[str, dict[str, str]]:
+    """
+    Syntax: parse_iw_dev_output(output)
+    Description: Parse ``iw dev`` output into interface address, SSID, and type details.
+    Parameters: output - Raw output from the ``iw dev`` command.
+    Return Value: A dictionary keyed by interface name, with address, SSID, and type fields.
+    Example: parse_iw_dev_output(iw_dev_output)
+    """
+    interfaces = {}
+    current_interface = None
+    for line in str(output or "").splitlines():
+        line = line.strip()
+        if line.startswith("Interface "):
+            fields = line.split(maxsplit=1)
+            if len(fields) != 2:
+                current_interface = None
+                continue
+            current_interface = fields[1]
+            interfaces[current_interface] = {"addr": "", "ssid": "", "type": ""}
+        elif current_interface and " " in line:
+            key, value = line.split(maxsplit=1)
+            if key in {"addr", "ssid", "type"}:
+                interfaces[current_interface][key] = (
+                    value.strip().lower() if key == "addr" else value.strip()
+                )
+    return interfaces
