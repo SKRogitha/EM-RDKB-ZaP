@@ -209,7 +209,7 @@ def pytest_runtest_makereport(item, call):
 	errors = report_logger.get_error_logs() + zi_logger.get_error_logs()
 	if errors:
 		report.outcome = "failed"
-		report.longrepr = "Error logs found:\n" + "\n".join(errors)
+		report.longrepr = "Error logs found:\n" + "\n".join(map(str, errors))
 
 def pytest_html_results_table_html(report, data):
 	if report.when != "call":
@@ -222,9 +222,10 @@ def pytest_html_results_table_html(report, data):
 		if section_name in ("Captured stdout call", "Captured log call")
 	)
 	if report.failed and hasattr(report, "longrepr"):
+		longrepr = str(report.longrepr)
 		new_data.append(
 			'<div><span style="color:red; font-weight:bold; '
-			f'white-space:pre-wrap;">{escape(str(report.longrepr))}</span></div>'
+			f'white-space:pre-wrap;">{escape(longrepr)}</span></div>'
 		)
 	if call_output:
 		html = "<br>".join(
