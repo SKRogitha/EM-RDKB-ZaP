@@ -241,7 +241,11 @@ def pytest_runtest_makereport(item, call):
 	errors = report_logger.get_error_logs() + zi_logger.get_error_logs()
 	if errors:
 		report.outcome = "failed"
+<<<<<<< HEAD
+		report.longrepr = "Error logs found:\n" + "\n".join(map(str, errors))
+=======
 		report.longrepr = "Error logs found:\n" + "\n".join(str(error) for error in errors)
+>>>>>>> 9cbd045 (Task #150 Fix stale device connections before each test execution)
 
 def pytest_html_results_table_html(report, data):
 	if report.when == "teardown" or (report.when == "setup" and not report.failed):
