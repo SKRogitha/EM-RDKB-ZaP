@@ -62,7 +62,9 @@ def open_device_connections(initialize):
 	failed_connections = []
 	for device in initialize.get_testbed_devices():
 		try:
-			initialize.connect_with_device(device)
+			connected = initialize.connect_with_device(device)
+			if connected is False:
+				failed_connections.append(f"Could not open {device} connection: connection API returned False")
 		except Exception as error:
 			failed_connections.append(f"Could not open {device} connection: {error}")
 	return failed_connections
@@ -241,11 +243,7 @@ def pytest_runtest_makereport(item, call):
 	errors = report_logger.get_error_logs() + zi_logger.get_error_logs()
 	if errors:
 		report.outcome = "failed"
-<<<<<<< HEAD
-		report.longrepr = "Error logs found:\n" + "\n".join(map(str, errors))
-=======
 		report.longrepr = "Error logs found:\n" + "\n".join(str(error) for error in errors)
->>>>>>> 9cbd045 (Task #150 Fix stale device connections before each test execution)
 
 def pytest_html_results_table_html(report, data):
 	if report.when == "teardown" or (report.when == "setup" and not report.failed):
