@@ -18,8 +18,7 @@
 import time
 from rdkbmeshzap.common_utils.device_utils import *
 from rdkbmeshzap.common_utils.client_utils import *
-from rdkbmeshzap.common_utils.test_report_utils import *
-from rdkbmeshzap.common_utils.link_and_scale_stability_utils import *
+from rdkbmeshzap.common_utils.link_stability_utils import *
 
 def test_em_fronthaul_rssi_stability(initialize):
     """

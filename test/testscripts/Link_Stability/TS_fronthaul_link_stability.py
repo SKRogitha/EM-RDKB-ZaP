@@ -18,7 +18,7 @@
 import time
 from rdkbmeshzap.common_utils import device_utils, report_logger
 from rdkbmeshzap.common_utils.client_utils import connect_wlan_clients
-from rdkbmeshzap.common_utils.link_and_scale_stability_utils import POLL_INTERVAL_SEC, TEST_DURATION_SEC
+from rdkbmeshzap.common_utils.link_stability_utils import *
 
 def test_em_fronthaul_link_stability(initialize):
     """
