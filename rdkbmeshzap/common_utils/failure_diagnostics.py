@@ -59,10 +59,11 @@ def stream_log(connection_obj, device, remote_path, local_path, compress=False, 
     partial_path = local_path.with_name(local_path.name + ".part")
     # Preserve remote command errors for the transfer failure message.
     error_output = bytearray()
-    # Give this transfer its own channel on the device transport.
-    channel = transport.open_session(timeout=LOG_TRANSFER_SOCKET_TIMEOUT)
+    channel = None
     last_activity = time.monotonic()
     try:
+        # Give this transfer its own channel on the device transport.
+        channel = transport.open_session(timeout=LOG_TRANSFER_SOCKET_TIMEOUT)
         if remote_command is None:
             command = "gzip -c" if compress else "cat"
             remote_command = f"{command} -- {shlex.quote(remote_path)}"
@@ -100,7 +101,12 @@ def stream_log(connection_obj, device, remote_path, local_path, compress=False, 
         partial_path.unlink(missing_ok=True)
         raise
     finally:
-        channel.close()
+        if channel is not None:
+            try:
+                channel.close()
+            except Exception:
+                # A close failure must not mask the original transfer error.
+                pass
 
 def record_command_output(debug_sections, name, collect):
     """
@@ -148,8 +154,10 @@ def collect_device_failure_diagnostics(initialize, scenario_dir, device):
             device_dir.mkdir(parents=True, exist_ok=True)
             debug_info_path.write_text("".join(debug_sections), encoding="utf-8")
             diagnostic_paths.append(debug_info_path)
-        except Exception:
-            pass
+        except Exception as error:
+            report_logger.print_error(
+                f"FAIL: {device}: could not write failure diagnostics: {error}"
+            )
         return diagnostic_paths
     device_dir.mkdir(parents=True, exist_ok=True)
     # Snapshot the live logs before running other diagnostic commands.
