@@ -254,9 +254,10 @@ def pytest_html_results_table_html(report, data):
 		if section_name in ( f"Captured stdout {report.when}", f"Captured log {report.when}",)
 	)
 	if report.failed and hasattr(report, "longrepr"):
+		longrepr = str(report.longrepr)
 		new_data.append(
 			'<div><span style="color:red; font-weight:bold; '
-			f'white-space:pre-wrap;">{escape(str(report.longrepr))}</span></div>'
+			f'white-space:pre-wrap;">{escape(longrepr)}</span></div>'
 		)
 	if call_output:
 		html = "<br>".join(
