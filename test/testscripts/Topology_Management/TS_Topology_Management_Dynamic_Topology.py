@@ -84,6 +84,7 @@ def test_topology_management_dynamic_topology(initialize):
             return
         report_logger.print_success("PASS: Each Extender's backhaul MAC appears in its parent's station table")
         # Ensure every Extender's parent chain reaches the Controller without loops.
+
         report_logger.print_step("STEP 8: Confirm each Extender's parent chain reaches the Controller")
         if not validate_parent_chains(parent_by_agent):
             return

@@ -304,7 +304,7 @@ def validate_extender_parent_connections(
     extenders: list[str] | None = None,
     iw_dev_snapshot: dict[str, dict[str, dict[str, str]]] | None = None,
     return_parent_map: bool = False,
-) -> bool | dict[str, str] | None:
+    ) -> bool | dict[str, str] | None:
     """
     Syntax: validate_extender_parent_connections(initialize, extenders=None, iw_dev_snapshot=None, return_parent_map=False)
     Description: Validate Extender parent connections, reusing one interface snapshot per device;
@@ -321,7 +321,6 @@ def validate_extender_parent_connections(
     if not extenders:
         report_logger.print_info("INFO: No enabled Extenders are configured")
         return {} if return_parent_map else True
-
     validation_result = True
     parent_by_extender = {}
     devices = ["controller", *extenders]
@@ -333,7 +332,6 @@ def validate_extender_parent_connections(
             except Exception as error:
                 report_logger.print_info(f"INFO: {device}: unable to read wireless interfaces: {error}")
                 iw_dev_snapshot[device] = {}
-
     for extender in extenders:
         parent, bssid = device_utils.get_extender_parent_device(
             initialize,

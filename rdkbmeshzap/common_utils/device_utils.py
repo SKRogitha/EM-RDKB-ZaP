@@ -343,6 +343,7 @@ def get_extender_parent_device(initialize, extender, devices, iw_dev_snapshot=No
     if not bssids:
         return None, None
     bssid = str(bssids[0]).lower()
+    mesh_backhaul_ssid = initialize.read_from_database("controller", "mesh_backhaul_ssid").strip()
 
     for device in devices:
         try:
@@ -356,7 +357,7 @@ def get_extender_parent_device(initialize, extender, devices, iw_dev_snapshot=No
             continue
         if any(
             details["addr"] == bssid
-            and details["ssid"] == "mesh_backhaul"
+            and details["ssid"] == mesh_backhaul_ssid
             and details["type"].lower() == "ap"
             for details in interface_details.values()
         ):

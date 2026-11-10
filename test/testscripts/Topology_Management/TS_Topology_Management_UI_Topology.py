@@ -34,27 +34,28 @@ def test_topology_management_ui_topology(initialize):
         devices = ["controller", *extenders]
 
         # Collect wireless interface details from every device.
-        report_logger.print_step("STEP 2: Collect wireless interface details")
+        report_logger.print_step("STEP 2: Collect wireless interface details for each device")
         interface_details = collect_interface_details(initialize, devices)
         if interface_details is None:
             return
         report_logger.print_success("PASS: Wireless interface details collected")
 
         # Find each Extender's backhaul MAC address.
-        report_logger.print_step("STEP 3: Find Extender backhaul MAC addresses")
+        report_logger.print_step("STEP 3: Find backhaul MAC addresses for each Extender")
         backhaul_mac_to_agent = collect_backhaul_macs(initialize, extenders, interface_details)
         if backhaul_mac_to_agent is None:
             return
         report_logger.print_success("PASS: Extender backhaul MAC addresses collected")
 
         # Find bridge station interfaces on every device.
-        report_logger.print_step("STEP 4: Find bridge station interfaces")
+        report_logger.print_step("STEP 4: Find bridge station interfaces for each device")
         station_interfaces_by_device = collect_bridge_station_interfaces(initialize, devices)
         if station_interfaces_by_device is None:
             return
         report_logger.print_success("PASS: Bridge station interfaces discovered")
+
         # Read associated station MACs from the bridge interfaces.
-        report_logger.print_step("STEP 5: Collect bridge station MAC addresses")
+        report_logger.print_step("STEP 5: Collect bridge station MAC addresses for each device")
         station_macs_by_device = collect_station_macs(initialize, station_interfaces_by_device)
         if station_macs_by_device is None:
             return
@@ -75,11 +76,13 @@ def test_topology_management_ui_topology(initialize):
             report_logger.print_error("FAIL: Extender parent discovery failed for: "+ ", ".join(failed_extenders))
             return
         report_logger.print_success("PASS: Extender parent devices discovered")
+
         # Check that each parent lists its Extender's backhaul MAC.
         report_logger.print_step("STEP 7: Check Extender backhaul MACs in parent station tables")
         if not validate_backhaul_associations(extenders, parent_by_agent, backhaul_mac_to_agent, station_macs_by_device):
             return
         report_logger.print_success("PASS: Each Extender's backhaul MAC appears in its parent's station table")
+
         # Ensure every parent chain reaches the Controller.
         report_logger.print_step("STEP 8: Check that parent chains reach the Controller")
         if not validate_parent_chains(parent_by_agent):
@@ -92,6 +95,7 @@ def test_topology_management_ui_topology(initialize):
         if live_topology_type is None:
             return
         report_logger.print_success(f"PASS: Detected {live_topology_type} topology")
+
         # Navigate to the Controller's Network Topology page.
         report_logger.print_step("STEP 10: Navigate to the Controller Network Topology page")
         try:
@@ -100,7 +104,7 @@ def test_topology_management_ui_topology(initialize):
             ui_module = initialize.get_ui_platform_obj("controller")
             if ui_module._page is None:
                 raise RuntimeError("Controller UI page is not open")
-            report_logger.print_info("INFO: Controller Network Topology page opened")
+            report_logger.print_info("INFO: Controller Network Topology page is accessible")
             page = ui_module._page
             ui_graph = read_ui_topology_graph(page)
         except Exception as error:
@@ -110,16 +114,18 @@ def test_topology_management_ui_topology(initialize):
         # Identify the root and match UI nodes to devices.
         report_logger.print_step("STEP 11: Match UI nodes to configured devices")
         errors = [str(ui_graph["error"])] if ui_graph.get("error") else []
-
         ui_nodes = ui_graph.get("nodes", [])
-        root_label = ui_graph.get("root")
-        if not root_label or root_label not in ui_nodes:
+        # IDs are SVG child indices; labels are display-only and can repeat.
+        ui_node_ids = {node["id"] for node in ui_nodes}
+        ui_node_labels = {node["id"]: node["label"] for node in ui_nodes}
+        root_id = ui_graph.get("root")
+        if root_id is None or root_id not in ui_node_ids:
             errors.append("Could not identify the root node in the Network Topology UI")
-
-        device_to_ui_label, mapping_errors = map_ui_nodes_to_devices(page, ui_nodes, devices, interface_details, root_label)
+        # Mapping values are node IDs, matching root and edge endpoints in ui_graph.
+        device_to_ui_node, mapping_errors = map_ui_nodes_to_devices(page, ui_nodes, devices, interface_details, root_id)
         errors.extend(mapping_errors)
-        controller_ui_label = device_to_ui_label.get("controller")
-        if controller_ui_label is None:
+        controller_ui_node = device_to_ui_node.get("controller")
+        if controller_ui_node is None:
             errors.append("Could not map a UI node to the Controller by its radio MACs")
         if errors:
             for error in errors:
@@ -128,37 +134,44 @@ def test_topology_management_ui_topology(initialize):
 
         # Check that every configured device was mapped to a UI node.
         report_logger.print_step("STEP 12: Verify every configured device has a UI node")
-        missing_devices = set(devices) - set(device_to_ui_label)
+        missing_devices = set(devices) - set(device_to_ui_node)
         if missing_devices:
             report_logger.print_error(f"FAIL: Configured devices missing from UI: {sorted(missing_devices)}")
             return
+        report_logger.print_success("PASS: Every configured device has a UI node")
 
         # Verify UI connections and report success after all topology checks pass.
-        report_logger.print_step("STEP 13: Verify UI connections match Extender parent relationships")
+        report_logger.print_step("STEP 13: Verify UI links match the discovered topology")
+        # Compare links by node ID so repeated display labels cannot merge distinct nodes.
         expected_edges = set()
-        if root_label and root_label != controller_ui_label:
-            expected_edges.add(tuple(sorted((root_label, controller_ui_label))))
+        if root_id is not None and root_id != controller_ui_node:
+            expected_edges.add(tuple(sorted((root_id, controller_ui_node))))
         for extender, parent in parent_by_agent.items():
-            child_label = device_to_ui_label.get(extender)
-            parent_label = device_to_ui_label.get(parent)
-            if child_label is None or parent_label is None:
+            child_node = device_to_ui_node.get(extender)
+            parent_node = device_to_ui_node.get(parent)
+            if child_node is None or parent_node is None:
                 report_logger.print_error(f"FAIL: Cannot compare the UI link for {parent} -> {extender}: a device has no mapped UI node")
                 return
-            expected_edges.add(tuple(sorted((parent_label, child_label))))
+            expected_edges.add(tuple(sorted((parent_node, child_node))))
         actual_edges = set()
         for edge in ui_graph.get("edges", []):
             source = edge.get("source")
             target = edge.get("target")
-            if source not in ui_nodes or target not in ui_nodes:
-                report_logger.print_error(f"FAIL: UI contains an edge with unknown endpoints: {edge}")
+            if source not in ui_node_ids or target not in ui_node_ids:
+                report_logger.print_error(f"FAIL: UI contains an edge with unknown endpoints: {source} ({ui_node_labels.get(source, 'unknown')}) -> {target} ({ui_node_labels.get(target, 'unknown')})")
                 return
             actual_edges.add(tuple(sorted((source, target))))
         missing_edges = expected_edges - actual_edges
         unexpected_edges = actual_edges - expected_edges
         if missing_edges or unexpected_edges:
-            report_logger.print_error(f"FAIL: UI parent-link mismatch; missing={sorted(missing_edges)}, unexpected={sorted(unexpected_edges)}")
+            for status, edges in (("Missing", missing_edges), ("Unexpected", unexpected_edges)):
+                for source, target in sorted(edges):
+                    report_logger.print_error(
+                        f"FAIL: UI parent-link mismatch: {status} link "
+                        f"{ui_node_labels[source]} (node {source}) -> "
+                        f"{ui_node_labels[target]} (node {target})"
+                    )
             return
-
-        report_logger.print_success(f"Network Topology UI nodes and parent links match the live {live_topology_type} topology")
+        report_logger.print_success(f"PASS: Network Topology UI nodes and parent links match the live {live_topology_type} topology")
     finally:
         report_logger.print_test("Exiting test_topology_management_ui_topology")

@@ -60,16 +60,26 @@ def test_topology_management_after_extender_reboots(initialize):
             return
 
         # Allow reboot sessions to close before reconnecting.
-        report_logger.print_info("INFO: Waiting 10 seconds before reconnecting to the Extenders")
         time.sleep(10)
 
-        # Wait for each Extender to reconnect and verify its recovery.
-        report_logger.print_step("STEP 3: Wait for all Extenders to recover")
+        # Check all Extender recoveries concurrently against the shared deadline.
+        report_logger.print_step("STEP 3: Recover all Extenders concurrently")
         recovery_results = {}
-        for index, extender in enumerate(extenders, start=1):
-            # Reuse the shared Recovery API with the Extender recovery KPI.
-            recovery_utils.recover_device(initialize, extender, reboot_started_at, recovery_results, f"3.{index}", recovery_type="agent")
-
+        with ThreadPoolExecutor(max_workers=len(extenders)) as executor:
+            recovery_futures = [
+                executor.submit(
+                    recovery_utils.recover_device,
+                    initialize,
+                    extender,
+                    reboot_started_at,
+                    recovery_results,
+                    f"3.{index}",
+                    recovery_type="agent",
+                )
+                for index, extender in enumerate(extenders, start=1)
+            ]
+            for future in as_completed(recovery_futures):
+                future.result()
         # Require a numeric recovery duration for every Extender.
         failed_extenders = [
             extender
@@ -86,7 +96,6 @@ def test_topology_management_after_extender_reboots(initialize):
         report_logger.print_step("STEP 4: Wait for topology updates on the Controller")
         time.sleep(30)
         report_logger.print_success("PASS: Topology propagation wait completed")
-
         devices = ["controller", *extenders]
 
         # Read each device's wireless interfaces once and reuse the snapshots.
@@ -110,6 +119,7 @@ def test_topology_management_after_extender_reboots(initialize):
         if station_interfaces_by_device is None:
             return
         report_logger.print_success("PASS: Bridge station interfaces discovered")
+
         # Read associated station MACs from the discovered interfaces.
         report_logger.print_step("STEP 8: Read bridge station MAC addresses for each device")
         station_macs_by_device = collect_station_macs(initialize, station_interfaces_by_device)
@@ -122,12 +132,7 @@ def test_topology_management_after_extender_reboots(initialize):
         parent_by_agent = {}
         failed_extenders = []
         for extender in extenders:
-            parent, bssid = device_utils.get_extender_parent_device(
-                initialize,
-                extender,
-                devices,
-                iw_dev_snapshot=interface_details,
-            )
+            parent, bssid = device_utils.get_extender_parent_device(initialize, extender, devices, iw_dev_snapshot=interface_details)
             if parent and parent != extender:
                 parent_by_agent[extender] = parent
                 report_logger.print_info(f"INFO: {extender} is connected to parent {parent} through backhaul BSSID {bssid}")
@@ -143,6 +148,7 @@ def test_topology_management_after_extender_reboots(initialize):
         if not validate_backhaul_associations(extenders, parent_by_agent, backhaul_mac_to_agent, station_macs_by_device):
             return
         report_logger.print_success("PASS: Each Extender's backhaul MAC appears in its parent's station table")
+
         # Ensure every Extender's parent chain reaches the Controller without loops.
         report_logger.print_step("STEP 11: Confirm each Extender's parent chain reaches the Controller")
         if not validate_parent_chains(parent_by_agent):

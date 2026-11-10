@@ -19,7 +19,8 @@ import re
 from typing import Any
 from rdkbmeshzap.common_utils import device_utils, report_logger
 
-UI_MAC_PATTERN = re.compile(r"\b[0-9a-fA-F]{2}(?::[0-9a-fA-F]{2}){5}\b")
+# Match colon-delimited MAC addresses in UI tooltip text.
+MAC_PATTERN = re.compile(r"\b[0-9a-fA-F]{2}(?::[0-9a-fA-F]{2}){5}\b")
 
 def collect_interface_details(initialize, devices: list[str]) -> dict[str, dict[str, dict[str, str]]] | None:
     """
@@ -251,10 +252,11 @@ def classify_topology(devices: list[str], extender_to_parent_map: dict[str, str]
 def read_ui_topology_graph(page) -> dict[str, Any]:
     """
     Syntax: read_ui_topology_graph(page)
-    Description: Read node labels, the root, and links from the rendered topology graph.
+    Description: Read unique node IDs, display labels, the root, and links from the rendered graph.
+        Each ID is the node's SVG child index for this graph snapshot; labels may repeat.
     Parameters:
         page : Controller Network Topology page.
-    Return Value: Mapping containing the root label, node labels, and graph edges.
+    Return Value: Mapping containing the root ID, nodes as ``{id, label}``, and edges as ID pairs.
     Example: read_ui_topology_graph(page)
     """
     page.wait_for_function(
@@ -275,13 +277,14 @@ def read_ui_topology_graph(page) -> dict[str, Any]:
             if (!svg) {
                 return { error: "Network Topology SVG was not found", nodes: [], edges: [] };
             }
-
-            const nodes = Array.from(nodeGroup.children, node => {
+            // Use each SVG child's index as a unique ID, even when labels repeat.
+            const nodes = Array.from(nodeGroup.children, (node, id) => {
                 const labels = Array.from(node.querySelectorAll("text"))
                     .map(label => (label.textContent || "").trim())
                     .filter(Boolean);
                 const transform = node.transform.baseVal.consolidate();
                 return labels.length && transform ? {
+                    id,
                     label: labels[labels.length - 1],
                     x: transform.matrix.e,
                     y: transform.matrix.f,
@@ -290,13 +293,13 @@ def read_ui_topology_graph(page) -> dict[str, Any]:
             }).filter(Boolean);
             const roots = nodes.filter(node => node.isRoot);
 
+            // Resolve edge endpoints to node IDs so duplicate labels stay distinct.
             const nearestNode = point => nodes.reduce((closest, candidate) => {
                 const distance = Math.hypot(candidate.x - point.x, candidate.y - point.y);
                 return !closest || distance < closest.distance
-                    ? { label: candidate.label, distance }
+                    ? { id: candidate.id, distance }
                     : closest;
-            }, null)?.label || null;
-
+            }, null)?.id ?? null;
             const edges = Array.from(svg.querySelectorAll(".edges > path"), path => {
                 const length = path.getTotalLength();
                 return length ? {
@@ -304,27 +307,26 @@ def read_ui_topology_graph(page) -> dict[str, Any]:
                     target: nearestNode(path.getPointAtLength(length))
                 } : null;
             }).filter(Boolean);
-
             return {
-                root: roots.length === 1 ? roots[0].label : null,
-                nodes: nodes.map(node => node.label),
+                root: roots.length === 1 ? roots[0].id : null,
+                nodes: nodes.map(({ id, label }) => ({ id, label })),
                 edges
             };
         }"""
     )
 
-def map_ui_nodes_to_devices(page, ui_nodes, devices, interface_details, root_label):
+def map_ui_nodes_to_devices(page, ui_nodes, devices, interface_details, root_id):
     """
-    Syntax: map_ui_nodes_to_devices(page, ui_nodes, devices, interface_details, root_label)
-    Description: Map UI node labels to devices using live interface MACs from ``iw dev``.
+    Syntax: map_ui_nodes_to_devices(page, ui_nodes, devices, interface_details, root_id)
+    Description: Map UI node IDs to devices using live interface MACs from ``iw dev``.
     Parameters:
         page : Controller Network Topology page.
-        ui_nodes : Labels of the rendered topology nodes.
+        ui_nodes : Rendered topology nodes with SVG child-index ``id`` values and display ``label`` values.
         devices : Controller and Extender device names.
         interface_details : Normalized wireless interfaces by device.
-        root_label : Label of the root node in the topology graph.
-    Return Value: Device-to-UI-label mapping and any mapping errors.
-    Example: map_ui_nodes_to_devices(page, ui_nodes, devices, interface_details, root_label)
+        root_id : SVG child-index ID of the root node, matching the IDs in ``ui_nodes``.
+    Return Value: Device-to-node-ID mapping and any mapping errors; labels are for diagnostics only.
+    Example: map_ui_nodes_to_devices(page, ui_nodes, devices, interface_details, root_id)
     """
     node_locator = page.locator("svg .nodes").first.locator(":scope > *")
     tooltip_locator = page.locator("#custom-tooltip")
@@ -336,37 +338,43 @@ def map_ui_nodes_to_devices(page, ui_nodes, devices, interface_details, root_lab
         }
         for device in devices
     }
-    device_to_ui_label = {}
+    # Key device mappings by node ID; use labels only in diagnostics.
+    device_to_ui_node = {}
+    node_labels = {node["id"]: node["label"] for node in ui_nodes}
     errors = []
-    for index, label in enumerate(ui_nodes):
+    for node in ui_nodes:
+        node_id = node["id"]
+        label = node["label"]
         try:
-            node_locator.nth(index).hover()
+            # The ID is the SVG child index, so it selects the matching rendered node.
+            node_locator.nth(node_id).hover()
             tooltip_locator.wait_for(state="visible", timeout=5000)
             tooltip_text = tooltip_locator.inner_text(timeout=5000)
         except Exception as error:
-            if label != root_label:
+            if node_id != root_id:
                 errors.append(f"Could not inspect UI node {label}: {error}")
             continue
         displayed_radio_macs = {
             match.group(0).lower()
-            for match in UI_MAC_PATTERN.finditer(tooltip_text)
+            for match in MAC_PATTERN.finditer(tooltip_text)
         }
         matching_devices = [
             device
             for device, radio_macs in device_radio_macs.items()
             if displayed_radio_macs & radio_macs
         ]
-        if not matching_devices and label == root_label:
+        if not matching_devices and node_id == root_id:
             continue
         if len(matching_devices) != 1:
             errors.append(f"UI node {label} maps to {len(matching_devices)} configured devices by its displayed radio MACs {sorted(displayed_radio_macs)}")
             continue
         device = matching_devices[0]
-        if device in device_to_ui_label:
-            errors.append(f"Configured device {device} appears under multiple UI labels: {device_to_ui_label[device]} and {label}")
+        if device in device_to_ui_node:
+            previous_node_id = device_to_ui_node[device]
+            errors.append(f"Configured device {device} appears under multiple UI nodes: {previous_node_id} ({node_labels[previous_node_id]}) and {node_id} ({label})")
             continue
-        device_to_ui_label[device] = label
+        device_to_ui_node[device] = node_id
         report_logger.print_info(f"INFO: UI node {label} maps to {device}")
-    return device_to_ui_label, errors
+    return device_to_ui_node, errors
 
 
