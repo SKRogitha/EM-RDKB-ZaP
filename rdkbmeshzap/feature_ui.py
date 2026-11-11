@@ -151,6 +151,7 @@ class FeatureUi(DatabaseModule):
         port = self.db_obj.read_from_database(device, 'ui_port')
         title = self.db_obj.read_from_database(device, 'ui_home_page_title')
         url = f"http://{ip}:{port}/"
+        # Bound navigation time so an unavailable UI does not stall the test.
         self._page.goto(
             url,
             wait_until="domcontentloaded",

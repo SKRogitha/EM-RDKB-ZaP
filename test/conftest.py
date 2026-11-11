@@ -58,7 +58,6 @@ setup_sections = {
 protocol_validation_results = []
 setup_failure = ""
 
-
 def open_device_connections(initialize):
 	# Collect connection failures so setup can report all affected devices.
 	failed_connections = []
@@ -172,7 +171,7 @@ def test_setup(request, initialize, verify_test_environment):
 		report_logger.print_info(f"INFO: Checking device connections before execution of test case: {request.node.name}")
 		connection_errors = open_device_connections(initialize)
 		for error in connection_errors:
-			report_logger.print_error(error)
+			report_logger.print_error(f"FAIL: {error}")
 		if connection_errors:
 			pytest.fail("Could not open all device connections:\n" + "\n".join(connection_errors))
 		initialize.set_sniffer_log_location("controller", initialize.pcap_log_dir)
@@ -225,7 +224,6 @@ def resource_usage_dir(request):
     resource_usage_dir.mkdir(parents=True, exist_ok=True)
     return str(resource_usage_dir)
 
-
 @pytest.hookimpl(hookwrapper=True)
 def pytest_runtest_setup(item):
 	report_logger.clear_error_logs()
@@ -248,8 +246,9 @@ def pytest_runtest_makereport(item, call):
 	errors = report_logger.get_error_logs() + zi_logger.get_error_logs()
 	if errors:
 		report.outcome = "failed"
-		report.longrepr = "Error logs found:\n" + "\n".join(errors)
-		report.user_properties.append(("error_logs", "\n".join(errors)))
+		formatted_errors = "\n".join(str(error) for error in errors)
+		report.longrepr = "Error logs found:\n" + formatted_errors
+		report.user_properties.append(("error_logs", formatted_errors))
 	if playwright_exception is not None:
 		report.user_properties.append(("playwright_failure", f"ERROR: {type(playwright_exception).__name__}: {playwright_exception}"))
 	captured_output = "\n".join(
@@ -303,21 +302,18 @@ def pytest_runtest_makereport(item, call):
 			try:
 				report.sections.append(("Failure diagnostics collection error", diagnostics_error))
 			except Exception:
+				# Ignore this reporting error so it does not hide the test failure.
 				pass
-		report.longrepr = "Error logs found:\n" + "\n".join(str(error) for error in errors)
 
 def pytest_html_results_table_html(report, data):
 	if report.when == "teardown" or (report.when == "setup" and not report.failed):
 		data.clear()
 		return
 	new_data = []
-	call_output = "\n".join(
-		value
-		for name, value in getattr(report, "user_properties", [])
-		if name == "captured_test_output"
-	)
+	properties = getattr(report, "user_properties", [])
+	captured_output = "\n".join(value for name, value in properties if name == "captured_test_output")
+	captured_output += "\n" + "\n".join(content for section_name, content in getattr(report, "sections", []) if section_name in (f"Captured stdout {report.when}", f"Captured log {report.when}"))
 	if report.failed and hasattr(report, "longrepr"):
-		properties = getattr(report, "user_properties", [])
 		property_values = {
 			key: "\n".join(value for name, value in properties if name == key)
 			for key in ("failure_details", "playwright_failure", "error_logs", "failure_diagnostics_error")
@@ -327,7 +323,7 @@ def pytest_html_results_table_html(report, data):
 		error_logs = property_values["error_logs"]
 		diagnostics_error = property_values["failure_diagnostics_error"]
 		error_details = [failure_details] if failure_details else []
-		if playwright_error and playwright_error not in failure_details:
+		if playwright_error and not failure_details:
 			error_details.append(playwright_error)
 		if error_logs:
 			error_details.append(error_logs)
@@ -356,20 +352,11 @@ def pytest_html_results_table_html(report, data):
 		new_data.append(
 			'<div><span style="color:red; font-weight:bold; '
 			f'white-space:pre-wrap;">{failure_text}</span></div>'
-		content
-		for section_name, content in getattr(report, "sections", [])
-		if section_name in ( f"Captured stdout {report.when}", f"Captured log {report.when}",)
 	)
-	if report.failed and hasattr(report, "longrepr"):
-		longrepr = str(report.longrepr)
-		new_data.append(
-			'<div><span style="color:red; font-weight:bold; '
-			f'white-space:pre-wrap;">{escape(longrepr)}</span></div>'
-		)
-	if call_output:
+	if captured_output.strip():
 		html = "<br>".join(
 			report_logger.format_report_line(line)
-			for line in call_output.splitlines()
+			for line in captured_output.splitlines()
 		)
 		new_data.append(f"<div>{html}</div>")
 	data.clear()

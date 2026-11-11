@@ -155,9 +155,7 @@ def collect_device_failure_diagnostics(initialize, scenario_dir, device):
             debug_info_path.write_text("".join(debug_sections), encoding="utf-8")
             diagnostic_paths.append(debug_info_path)
         except Exception as error:
-            report_logger.print_error(
-                f"FAIL: {device}: could not write failure diagnostics: {error}"
-            )
+            report_logger.print_error(f"FAIL: {device}: could not write failure diagnostics: {error}")
         return diagnostic_paths
     device_dir.mkdir(parents=True, exist_ok=True)
     # Snapshot the live logs before running other diagnostic commands.
