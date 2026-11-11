@@ -319,6 +319,8 @@ def pytest_html_results_table_html(report, data):
 			for key in ("failure_details", "playwright_failure", "error_logs", "failure_diagnostics_error")
 		}
 		failure_details = property_values["failure_details"]
+		if not failure_details and report.when == "setup":
+			failure_details = str(report.longrepr or "")
 		playwright_error = property_values["playwright_failure"]
 		error_logs = property_values["error_logs"]
 		diagnostics_error = property_values["failure_diagnostics_error"]
