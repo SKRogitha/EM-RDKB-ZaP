@@ -16,8 +16,7 @@
 # limitations under the License.
 
 import time
-from rdkbmeshzap.common_utils import device_utils, report_logger
-from rdkbmeshzap.common_utils.client_utils import connect_wlan_clients
+from rdkbmeshzap.common_utils import client_utils, device_utils, report_logger
 from rdkbmeshzap.common_utils.link_and_scale_stability_utils import *
 
 def test_em_fronthaul_phyrate_stability(initialize):
@@ -31,20 +30,20 @@ def test_em_fronthaul_phyrate_stability(initialize):
         if not present_clients:
                 report_logger.print_error("No fronthaul clients are marked present in the database")
         try:
-            clients = connect_wlan_clients(
-                initialize, present_clients, require_all=False)
+            ssid, password = initialize.get_fronthaul_credentials("controller")
         except Exception as err:
-            report_logger.print_error(f"Unable to prepare fronthaul clients for PHY-rate monitoring: {err}")
-        unavailable = [
-            f"{client}: connection unavailable"
-            for client in present_clients
-            if client not in clients
-        ]
+            report_logger.print_error(f"Unable to retrieve WLAN credentials: {err}")
+            return
+        connected_clients = []
+        for client in present_clients:
+            if client_utils.remove_and_connect_client(initialize, client, ssid, password):
+                connected_clients.append(client)
+            else:
+                report_logger.print_info(f"INFO: Unable to connect WLAN client '{client}'")
+        clients = connected_clients
         if not clients:
             report_logger.print_error("No WLAN clients were connected")
             return
-        if unavailable:
-            report_logger.print_error(f"Unable to establish association for configured WLAN clients: {unavailable}")
         report_logger.print_success(f"PASS: Connected clients before PHY-rate test: {', '.join(clients)}")
         poll_interval_sec = POLL_INTERVAL_SEC
         test_duration_sec = TEST_DURATION_SEC

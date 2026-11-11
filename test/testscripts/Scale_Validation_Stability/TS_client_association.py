@@ -13,8 +13,7 @@
 # limitations under the License.
 
 import time
-from rdkbmeshzap.common_utils import device_utils, report_logger
-from rdkbmeshzap.common_utils.client_utils import connect_wlan_clients
+from rdkbmeshzap.common_utils import client_utils, device_utils, report_logger
 from rdkbmeshzap.common_utils.link_and_scale_stability_utils import *
 
 def test_em_scale_client_association(initialize):
@@ -32,9 +31,19 @@ def test_em_scale_client_association(initialize):
             return
         report_logger.print_step("STEP 2: Connect configured WLAN clients and verify availability before baseline capture")
         try:
-            clients = connect_wlan_clients(initialize, clients)
+            ssid, password = initialize.get_fronthaul_credentials("controller")
         except Exception as error:
-            report_logger.print_error(f"FAIL: {error}")
+            report_logger.print_error(f"Unable to retrieve WLAN credentials: {error}")
+            return
+        connected_clients = []
+        for client in clients:
+            if client_utils.remove_and_connect_client(initialize, client, ssid, password):
+                connected_clients.append(client)
+            else:
+                report_logger.print_info(f"INFO: Unable to connect WLAN client '{client}'")
+        clients = connected_clients
+        if not clients:
+            report_logger.print_error("FAIL: No WLAN clients could be connected")
             return
         report_logger.print_success(f"PASS: Connected clients before client-presence test: {', '.join(clients)}")
         expected_client_count = get_enabled_scale_setup(initialize)["expected_client_count"]
