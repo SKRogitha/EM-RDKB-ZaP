@@ -549,7 +549,7 @@ class FeatureInterface(FeatureInterfaceModules):
         iface_obj = self.get_feature_interface_module_object(method)
         return iface_obj.get_device_index(device, device_mac)
 
-    def set_wpa_log_level(self, device: str, level: str, method='gui') -> bool:
+    def set_wpa_log_level(self, device: str, level: str, method='cli') -> bool:
         """
         Set the WPA supplicant log level on the device.
         """
@@ -557,7 +557,7 @@ class FeatureInterface(FeatureInterfaceModules):
         iface_obj = self.get_feature_interface_module_object(method)
         return iface_obj.set_wpa_log_level(device, level)
 
-    def get_wpa_cli_status(self, device: str, method='gui') -> str:
+    def get_wpa_cli_status(self, device: str, method='cli') -> str:
         """
         Get the WPA supplicant status using wpa_cli on the device.
         """
@@ -565,7 +565,7 @@ class FeatureInterface(FeatureInterfaceModules):
         iface_obj = self.get_feature_interface_module_object(method)
         return iface_obj.get_wpa_cli_status(device)
 
-    def verify_four_way_handshake_messages(self, device: str,method='gui') -> str:
+    def verify_four_way_handshake_messages(self, device: str,method='cli') -> str:
         """
         Verify the WPA 4-Way Handshake messages of the Wi-Fi client.
         """
@@ -573,7 +573,7 @@ class FeatureInterface(FeatureInterfaceModules):
         iface_obj = self.get_feature_interface_module_object(method)
         return iface_obj.verify_four_way_handshake_messages(device)
 
-    def get_wpa_cli_capability(self, device: str, capability: str, method='gui') -> str:
+    def get_wpa_cli_capability(self, device: str, capability: str, method='cli') -> str:
         """
         Get the WPA supplicant capabilities using wpa_cli on the device.
         """
@@ -605,7 +605,7 @@ class FeatureInterface(FeatureInterfaceModules):
         iface_obj = self.get_feature_interface_module_object(method)
         return iface_obj.get_radio_enabled_status(device, device_index, radio_index)
 
-    def get_ssid_for_each_radio(self, device: str, device_index: str, radio_index: str, bss_index: str, method='gui') -> str:
+    def get_ssid_for_each_radio(self, device: str, device_index: str, radio_index: str, bss_index: str, method='de') -> str:
         """
         Get the SSID for each radio using the device index and radio index.
         """
@@ -613,7 +613,7 @@ class FeatureInterface(FeatureInterfaceModules):
         iface_obj = self.get_feature_interface_module_object(method)
         return iface_obj.get_ssid_for_each_radio(device, device_index, radio_index, bss_index)
 
-    def get_wlan_ip_address(self, device: str, method='gui') -> str:
+    def get_wlan_ip_address(self, device: str, method='cli') -> str:
             """
             To get the IP address of the device for a specific interface.
             """
@@ -621,7 +621,7 @@ class FeatureInterface(FeatureInterfaceModules):
             iface_obj = self.get_feature_interface_module_object(method)
             return iface_obj.get_wlan_ip_address(device)
 
-    def get_wifi_generation(self, device: str, method='gui') -> str:
+    def get_wifi_generation(self, device: str, method='cli') -> str:
         """
         Identify the highest Wi-Fi generation supported by the device.
         """
@@ -629,7 +629,7 @@ class FeatureInterface(FeatureInterfaceModules):
         iface_obj = self.get_feature_interface_module_object(method)
         return iface_obj.get_wifi_generation(device)
 
-    def get_operating_radio_details(self, device: str, band: str, method='gui') -> dict:
+    def get_operating_radio_details(self, device: str, band: str, method='cli') -> dict:
         """
         Get the operating radio details of the device.
         """
