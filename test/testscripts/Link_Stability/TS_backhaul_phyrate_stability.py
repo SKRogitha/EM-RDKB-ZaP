@@ -50,10 +50,10 @@ def test_em_backhaul_phy_rate_stability(initialize):
                     report_logger.print_error(f"Unable to capture baseline PHY rates for '{extender}': {err}")
                     continue
                 report_logger.print_info(f"INFO: Baseline extender #{extender_index} {extender}: {state}")
-                current_rates = {"tx_mbps": rate_to_mbps(*state["tx_rate"]),"rx_mbps": rate_to_mbps(*state["rx_rate"]),}
                 if not state["connected"]:
                     report_logger.print_error(f"Backhaul link is not connected for '{extender}'")
                     continue
+                current_rates = {"tx_mbps": rate_to_mbps(*state["tx_rate"]) if state["tx_rate"] else None, "rx_mbps": rate_to_mbps(*state["rx_rate"]) if state["rx_rate"] else None}
                 error = validate_phy_rates(current_rates)
                 if error:
                     report_logger.print_error(f"{extender}: {error}")
@@ -78,7 +78,7 @@ def test_em_backhaul_phy_rate_stability(initialize):
                 if not state["connected"]:
                     report_logger.print_error(f"{extender}: backhaul link disconnected")
                     continue
-                current_rates = {"tx_mbps": rate_to_mbps(*state["tx_rate"]),"rx_mbps": rate_to_mbps(*state["rx_rate"]),}
+                current_rates = {"tx_mbps": rate_to_mbps(*state["tx_rate"]) if state["tx_rate"] else None, "rx_mbps": rate_to_mbps(*state["rx_rate"]) if state["rx_rate"] else None}
                 error = validate_phy_rates(current_rates=current_rates,baseline_rates=baseline_rates,)
                 if error:
                     report_logger.print_error(f"{extender}: {error}")
@@ -96,7 +96,7 @@ def test_em_backhaul_phy_rate_stability(initialize):
             if not state["connected"]:
                 report_logger.print_error(f"{extender}: backhaul link disconnected")
                 continue
-            current_rates = {"tx_mbps": rate_to_mbps(*state["tx_rate"]),"rx_mbps": rate_to_mbps(*state["rx_rate"]),}
+            current_rates = {"tx_mbps": rate_to_mbps(*state["tx_rate"]) if state["tx_rate"] else None, "rx_mbps": rate_to_mbps(*state["rx_rate"]) if state["rx_rate"] else None}
             error = validate_phy_rates(current_rates=current_rates,baseline_rates=baseline_rates,)
             if error:
                 report_logger.print_error(f"{extender}: {error}")

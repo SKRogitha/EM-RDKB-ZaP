@@ -11,9 +11,9 @@ MAX_PACKET_LOSS_PERCENT = 5.0
 # Maximum average latency allowed relative to the baseline.
 MAX_LATENCY_MULTIPLIER = 2.0
 # Time between stability checks in seconds.
-POLL_INTERVAL_SEC = 30
+POLL_INTERVAL_SEC = 600
 # Total link stability monitoring duration in seconds.
-TEST_DURATION_SEC = 120
+TEST_DURATION_SEC = 3600
 # Number of packets used for regular ping measurements.
 PING_COUNT = 10
 # Number of packets used for the final ping measurement.
@@ -28,6 +28,8 @@ MIN_THROUGHPUT_RATIO = 0.8
 PHY_RATE_DROP_PERCENT = 50
 # Maximum RSSI degradation allowed from the baseline (dB).
 MAX_RSSI_DEGRADATION_DB = 10
+# Minimum RSSI required for a stable link (dBm).
+MIN_RSSI_DBM = -80
 
 def parse_ping_metrics(output: str) -> dict:
     """
@@ -63,11 +65,11 @@ def parse_iperf_throughput(output: str) -> float:
         bits_per_second = result["end"]["sum_received"]["bits_per_second"]
         return float(bits_per_second) / 1_000_000
     except (ValueError, KeyError, TypeError, json.JSONDecodeError):
-        matches = re.findall(r"([0-9]+(?:\.[0-9]+)?)\s+([KMG])bits/sec",output,flags=re.IGNORECASE,)
+        matches = re.findall(r"([0-9]+(?:\.[0-9]+)?)\s+([KMG]?)bits/sec",output,flags=re.IGNORECASE,)
         if not matches:
             raise ValueError(f"Unable to parse iperf3 throughput: {output}")
         value, unit = matches[-1]
-        multiplier = {"K": 0.001, "M": 1.0, "G": 1000.0}[unit.upper()]
+        multiplier = {"": 0.000001, "K": 0.001, "M": 1.0, "G": 1000.0}[unit.upper()]
         return float(value) * multiplier
 
 def run_ping(initialize, client: str, gateway_ip: str, count: int,
@@ -114,7 +116,7 @@ def run_iperf(initialize, client: str, gateway_ip: str) -> float:
     connection_obj = initialize.get_connection_module_object(connection)
     try:
         initialize.start_iperf_client(client,gateway_ip,bind_ip,"tcp",remote_log,time=IPERF_SAMPLE_DURATION_SEC,)
-        output, error = connection_obj.execute_command(client, f"cat {remote_log}")
+        output, error = connection_obj.execute_command(client, f"cat {remote_log}", return_stderr=True)
         if error and not output:
             raise Exception(str(error).strip())
         return parse_iperf_throughput(str(output))

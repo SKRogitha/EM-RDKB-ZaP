@@ -99,7 +99,7 @@ def test_em_fronthaul_phyrate_stability(initialize):
             except Exception as err:
                 report_logger.print_error(f"Final PHY-rate Monitoring failed for '{client}': {err}")
                 continue
-                error = validate_phy_rates(state, baseline_rates[client], PHY_RATE_DROP_PERCENT)
+            error = validate_phy_rates(state, baseline_rates[client], PHY_RATE_DROP_PERCENT)
             if error:
                 report_logger.print_error(f"Client '{client}' final PHY validation failed: {error}")
                 continue

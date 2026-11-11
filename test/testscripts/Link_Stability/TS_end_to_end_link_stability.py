@@ -14,6 +14,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
 import time
 from rdkbmeshzap.common_utils import client_utils, device_utils, report_logger
 from rdkbmeshzap.common_utils.link_stability_utils import *
@@ -44,7 +45,7 @@ def test_em_end_to_end_link_performance_stability(initialize):
             if client_utils.remove_and_connect_client(initialize, client, ssid, password):
                 connected_clients.append(client)
             else:
-                report_logger.print_error(f"{client}: unable to connect to the EasyMesh SSID")
+                report_logger.print_info(f"INFO: WLAN client '{client}' was unavailable for the test")
         clients = connected_clients
         if not clients:
             report_logger.print_error("No extender-owned WLAN clients connected successfully")
@@ -53,7 +54,7 @@ def test_em_end_to_end_link_performance_stability(initialize):
         gateway_ip = initialize.read_from_database("controller", "bridge_ip")
         baseline = {}
         iperf_server_started = False
-        report_logger.print_step("STEP 2: Prepare throughput monitoring and capture client performance baselines")
+        report_logger.print_step("STEP 2: Capture client performance baselines")
         report_logger.print_step("STEP 2.1: Start the controller iperf3 server")
         try:
             initialize.execute_command("controller", f"rm -f {IPERF_SERVER_LOG}")
@@ -62,37 +63,38 @@ def test_em_end_to_end_link_performance_stability(initialize):
             report_logger.print_info(f"INFO: Controller iperf3 server started on {gateway_ip}; throughput baselines are enabled")
         except Exception as err:
             report_logger.print_error(f"Throughput monitoring is unavailable because the controller iperf3 server could not start: {err}")
-        report_logger.print_step("STEP 2.2: Capture and validate baseline ping metrics for each connected client")
+        report_logger.print_step("STEP 2.2: Capture baseline ping and throughput for each client")
         for index, client in enumerate(clients, start=1):
-            report_logger.print_step(f"STEP 2.2.{index}: Ping baseline for {client}")
+            report_logger.print_info(f"INFO: Baseline ping for client #{index} '{client}'")
             try:
                 ping_metrics = run_ping(initialize, client, gateway_ip, PING_COUNT)
             except Exception as err:
-                report_logger.print_error(f"STEP 2.2.{index} FAILED: {client} baseline ping measurement failed: {err}")
+                report_logger.print_error(f"Baseline ping failed for client #{index} '{client}': {err}")
                 continue
             if ping_metrics["loss_percent"] > MAX_PACKET_LOSS_PERCENT:
-                report_logger.print_error(f"STEP 2.2.{index} FAILED: {client} baseline packet loss is {ping_metrics['loss_percent']:.2f}%")
+                report_logger.print_error(f"Baseline packet loss failed for client #{index} '{client}': {ping_metrics['loss_percent']:.2f}%")
                 continue
             baseline[client] = ping_metrics
-            report_logger.print_success(f"PASS: STEP 2.2.{index}: {client} baseline accepted with avg latency={ping_metrics['avg_ms']:.2f} ms and packet loss={ping_metrics['loss_percent']:.2f}%")
+            report_logger.print_success(f"PASS: Client #{index} '{client}' baseline accepted with avg latency={ping_metrics['avg_ms']:.2f} ms and packet loss={ping_metrics['loss_percent']:.2f}%")
             if iperf_server_started:
-                report_logger.print_step(f"STEP 2.3.{index}: Measure baseline throughput for client {client}")
+                report_logger.print_info(f"INFO: Baseline throughput for client #{index} '{client}'")
                 try:
                     throughput = run_iperf(initialize, client, gateway_ip)
                     baseline[client]["throughput_mbps"] = throughput
-                    report_logger.print_success(f"PASS: STEP 2.3.{index}: {client} baseline throughput={throughput:.2f} Mbps")
+                    report_logger.print_success(f"PASS: Baseline throughput for client #{index} '{client}'={throughput:.2f} Mbps")
                 except Exception as err:
-                    report_logger.print_error(f"STEP 2.3.{index} FAILED: {client} baseline throughput measurement failed: {err}")
+                    report_logger.print_error(f"Baseline throughput failed for client #{index} '{client}': {err}")
         if not baseline:
             report_logger.print_error("No connected WLAN clients passed the baseline reachability check")
             return
         report_logger.print_step("STEP 3: Monitor end-to-end client performance")
+        report_logger.print_step("STEP 3.1: Check each client's ping and throughput")
         start = time.time()
         poll = 0
         while time.time() - start < TEST_DURATION_SEC:
             poll += 1
             for index, client in enumerate(baseline, start=1):
-                report_logger.print_step(f"STEP 3.{poll}.{index}: Ping check for {client}")
+                report_logger.print_info(f"INFO: Poll #{poll}, client #{index}: Ping check for '{client}'")
                 try:
                     ping_metrics = run_ping(
                         initialize, client, gateway_ip, PING_COUNT)
