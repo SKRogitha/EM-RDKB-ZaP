@@ -228,7 +228,10 @@ def remove_and_connect_client(initialize, client, ssid, password):
     """
     Syntax: remove_and_connect_client(initialize, client, ssid, password)
     Description: Remove existing Wi-Fi connections from the client and attempt to connect it to the specified SSID using the available 2.4 GHz, 5 GHz, or 6 GHz radio BSSID of the associated device.
-    Parameters: initialize - Testbed interface; client - Client device name; ssid - Wi-Fi network SSID; password - Wi-Fi network password.
+    Parameters: initialize - Testbed interface, 
+                client - Client device name, 
+                ssid - Wi-Fi network SSID, 
+                password - Wi-Fi network password.
     Return Value: True if the client successfully connects through any available radio; otherwise, False.
     Example: remove_and_connect_client(initialize, "controller_wlan_client_1", "EasyMesh_SSID", "password123")
     """
@@ -252,10 +255,10 @@ def remove_and_connect_client(initialize, client, ssid, password):
             try:
                 initialize.connect_client_to_ssid(client, ssid, password, device_bssid)
                 time.sleep(10)
-                report_logger.print_success(f"PASS: {client} connected through {radio} radio")
+                report_logger.print_success(f"PASS: {client} connected through {radio} radio ({device_bssid})")
                 return True
             except Exception as e:
-                report_logger.print_info(f"INFO: {client} failed to connect through {radio} radio: {e}")
+                report_logger.print_info(f"INFO: {client} failed to connect through {radio} radio ({device_bssid}): {e} ")
         report_logger.print_error(f"FAIL: {client} could not connect through 2G, 5G or 6G radio")
         return False
     except Exception as e:
@@ -266,7 +269,8 @@ def verify_client_association(initialize, client):
     """
     Syntax: verify_client_association(initialize, client)
     Description: Verify whether a Wi-Fi client is successfully associated with any known 2.4 GHz, 5 GHz, or 6 GHz radio of its corresponding device by comparing the associated MAC address with the available radio MAC addresses.
-    Parameters: initialize - Testbed interface; client - Client device name.
+    Parameters: initialize - Testbed interface,
+                client - Client device name.
     Return Value: True if the client is successfully associated with any known radio; otherwise, False.
     Example: verify_client_association(initialize, "controller_wlan_client_1")
     """

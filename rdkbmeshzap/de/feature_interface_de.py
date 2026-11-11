@@ -397,4 +397,4 @@ class FeatureInterfaceDE(DatabaseModule,
         output, error = connection_obj.execute_command(device, cmd, return_stderr=True)
         if 'Value :' not in output:
             raise RuntimeError(f"Command execution failed : {output.strip()}")
-        return output.partition('Value')[2].strip()
+        return output.partition('Value :')[2].strip()
