@@ -187,7 +187,7 @@ def validate_topology_capture(packets, extender, extender_al_mac=None):
 def monitor_device_reachability(initialize, device, stop_event, interval_seconds=5, status_context="during recovery", poll_failure_event=None):
     """
     Syntax: monitor_device_reachability(initialize, device, stop_event, interval_seconds=5, status_context="during recovery")
-    Description: Periodically check and report device reachability until the stop event is set.
+    Description: Poll reachability until stopped, logging each result and signaling failures.
     Parameters:
         initialize : Testbed interface.
         device : Device name.
@@ -195,21 +195,20 @@ def monitor_device_reachability(initialize, device, stop_event, interval_seconds
         interval_seconds : Seconds between checks.
         status_context : Text describing the activity during monitoring.
         poll_failure_event : Optional Event set when a reachability poll fails.
-    Return Value: None; reports each reachability check.
+    Return Value: None; sets poll_failure_event when a poll fails.
     Example: monitor_device_reachability(initialize, "extender1", stop_event)
     """
     poll_count = 0
     while not stop_event.wait(interval_seconds):
         poll_count += 1
-        failure = None
         try:
             if not initialize.is_device_alive(device):
                 failure = "not reachable"
+            else:
+                report_logger.print_info(f"INFO: Poll #{poll_count} {device} reachable ({status_context})")
+                continue
         except Exception as error:
             failure = f"reachability check failed: {error}"
-        if failure:
-            if poll_failure_event is not None:
-                poll_failure_event.set()
-            report_logger.print_error(f"FAIL: Poll #{poll_count} {device} unreachable ({status_context})")
-        else:
-            report_logger.print_info(f"INFO: Poll #{poll_count} {device} reachable ({status_context})")
+        report_logger.print_error(f"FAIL: Poll #{poll_count} {device} {failure} ({status_context})")
+        if poll_failure_event is not None:
+            poll_failure_event.set()
