@@ -55,9 +55,6 @@ def test_topology_management_after_extender_reboots(initialize):
                 report_logger.print_error(f"FAIL: {extender}: reboot command failed: {reboot_errors[extender]}")
             else:
                 report_logger.print_info(f"INFO: Reboot command executed for {extender}")
-        if reboot_errors:
-            report_logger.print_error("FAIL: Extender reboot command failed for: " + ", ".join(reboot_errors))
-            return
 
         # Allow reboot sessions to close before reconnecting.
         time.sleep(10)
@@ -80,6 +77,12 @@ def test_topology_management_after_extender_reboots(initialize):
             ]
             for future in as_completed(recovery_futures):
                 future.result()
+
+        # Report reboot errors after recovery is complete
+        if reboot_errors:
+            report_logger.print_error("FAIL: Extender reboot command failed for: " + ", ".join(reboot_errors))
+            return
+
         # Require a numeric recovery duration for every Extender.
         failed_extenders = [
             extender

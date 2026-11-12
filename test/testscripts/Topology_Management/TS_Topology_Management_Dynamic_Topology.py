@@ -67,7 +67,7 @@ def test_topology_management_dynamic_topology(initialize):
         parent_by_agent = {}
         failed_extenders = []
         for extender in extenders:
-            parent, bssid = device_utils.get_extender_parent_device(initialize, extender, devices, iw_dev_snapshot=interface_details,)
+            parent, bssid = device_utils.get_extender_parent_device(initialize, extender, devices, iw_dev_snapshot=interface_details)
             if parent and parent != extender:
                 parent_by_agent[extender] = parent
                 report_logger.print_info(f"INFO: {extender} is connected to parent {parent} through backhaul BSSID {bssid}")
@@ -83,8 +83,8 @@ def test_topology_management_dynamic_topology(initialize):
         if not validate_backhaul_associations(extenders, parent_by_agent, backhaul_mac_to_agent, station_macs_by_device):
             return
         report_logger.print_success("PASS: Each Extender's backhaul MAC appears in its parent's station table")
-        # Ensure every Extender's parent chain reaches the Controller without loops.
 
+        # Ensure every Extender's parent chain reaches the Controller without loops.
         report_logger.print_step("STEP 8: Confirm each Extender's parent chain reaches the Controller")
         if not validate_parent_chains(parent_by_agent):
             return
