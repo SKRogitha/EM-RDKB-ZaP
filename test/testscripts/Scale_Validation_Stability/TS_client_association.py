@@ -29,11 +29,11 @@ def test_em_scale_client_association(initialize):
         if not clients:
             report_logger.print_error("No clients are marked present in the database")
             return
-        report_logger.print_step("STEP 2: Retrieve WLAN credentials for client connection")
+        report_logger.print_step("STEP 2: Retrieve fronthaul credentials for client connection")
         try:
             ssid, password = initialize.get_fronthaul_credentials("controller")
         except Exception as error:
-            report_logger.print_error(f"Unable to retrieve WLAN credentials: {error}")
+            report_logger.print_error(f"Unable to retrieve fronthaul credentials: {error}")
             return
         report_logger.print_success("PASS: Fronthaul credentials retrieved successfully")
         report_logger.print_step("STEP 3: Connect configured WLAN clients and verify availability before baseline capture")

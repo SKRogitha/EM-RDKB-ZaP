@@ -32,11 +32,11 @@ def test_em_fronthaul_rssi_stability(initialize):
         present_clients = device_utils.get_enabled_clients(initialize)
         if not present_clients:
             report_logger.print_error("No fronthaul clients are marked present in the database")
-        report_logger.print_step("STEP 2: Retrieve WLAN credentials for client connection")
+        report_logger.print_step("STEP 2: Retrieve fronthaul credentials for client connection")
         try:
             ssid, password = initialize.get_fronthaul_credentials("controller")
         except Exception as err:
-            report_logger.print_error(f"Unable to retrieve WLAN credentials: {err}")
+            report_logger.print_error(f"Unable to retrieve fronthaul credentials: {err}")
             return
         report_logger.print_success("PASS: Fronthaul credentials retrieved successfully")
         report_logger.print_step("STEP 3: Connect configured WLAN clients and verify availability")
