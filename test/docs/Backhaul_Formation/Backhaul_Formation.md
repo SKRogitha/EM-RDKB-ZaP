@@ -33,7 +33,7 @@ Verify that a Wi-Fi (Wireless) backhaul link is successfully established between
 | 3 | Verify the backhaul link using `iw dev wifi1.3 link` | Agent is connected to a backhaul BSSID, the connected SSID is mesh_backhaul, and a signal strength value is displayed. |
 | 4 | Verify the backhaul link type on Agent 1 using `bridge fdb show \| grep -i <controller_al_mac>` | The Controller AL MAC is learned on port `wifi1.3` (`dev wifi1.3`), confirming that the path to the Controller is the Wi-Fi backhaul, so the link type is Wi-Fi. If it is learned on a wired port (e.g. `eth*`/`lan*`) or not learned at all, the test fails. |
 | 5 | Verify connectivity by running `ping <agent_ip>` from the Controller | Successful ping response is observed. |
-| 6 | Stop capture after the IEEE1905 onboarding exchange completes and inspect using `tcpdump -r /tmp/ieee1905.pcap -n` or Wireshark | IEEE1905 Topology Discovery and AP Autoconfiguration Search messages from or to Agent 1's AL MAC address are observed. Topology Notification is checked for information only: it is logged whether it was observed, but its absence does not fail the test, because the Controller sends it only when it detects a new device in the topology. |
+| 6 | Stop capture after the IEEE1905 onboarding exchange completes and inspect using Wireshark | IEEE1905 Topology Discovery and AP Autoconfiguration Search messages for Agent 1 are observed, followed by a completed Topology Query/Response exchange between Agent 1 and the Controller, correlated using Agent 1's AL MAC. Topology Notification is logged for information only; its absence does not fail the test. |
 
 ---
 
