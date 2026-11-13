@@ -70,7 +70,6 @@ def test_topology_management_after_extender_reboots(initialize):
                     extender,
                     reboot_started_at,
                     recovery_results,
-                    f"3.{index}",
                     recovery_type="agent",
                 )
                 for index, extender in enumerate(extenders, start=1)
