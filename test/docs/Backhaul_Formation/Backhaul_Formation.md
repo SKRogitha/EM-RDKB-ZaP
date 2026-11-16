@@ -338,7 +338,7 @@ Verify that when Agent 2 forms its backhaul through Agent 1 as an intermediate h
 | 1 | Verify Agent 1 upstream backhaul using `iw dev wifi1.3 link` | Agent 1 shows active connection with SSID mesh_backhaul. |
 | 2 | Identify downstream backhaul AP interface using `iw dev` | Backhaul AP interface (wifi1.1) is identified with the expected SSID and valid BSSID. |
 | 3 | Check existing downstream topology by searching for dynamically created downstream STA interfaces | Existing downstream STA interface is logged if present; otherwise no downstream STA interface is detected. |
-| 4 | Start packet capture using `tcpdump -i wifi1.1 -w /tmp/multihop_check.pcap` | Packet capture starts successfully on Agent 1 downstream interface. |
+| 4 | Start packet capture on Agent 1 using `tcpdump -i any -w /tmp/multihop_check.pcap`. Capture across interfaces so that traffic on the dynamically created downstream per-station port is included; correlate the analysis with Agent 2's backhaul MAC and AL MAC. | Packet capture starts before Agent 2 powers on and includes both authentication traffic and downstream per-station-port traffic. |
 | 5 | Power on Agent 2 and allow onboarding through Agent 1 | Agent 2 associates through Agent 1 and a downstream STA interface (wifi1.1.staXX) is detected on Agent 1. |
 | 6 | Verify Agent 2 backhaul association using `iw dev wifi1.3 link` | Agent 2 is connected to Agent 1's backhaul BSSID and station interface is operational. |
 | 7 | Verify dynamic bridge learning using `bridge fdb show` | Agent 2 MAC address is dynamically learned on the downstream interface or driver-created per-station port. |
