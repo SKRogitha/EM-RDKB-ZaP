@@ -152,6 +152,7 @@ def test_backhaul_wireless_formation_linktype(initialize):
                 local_path = device_utils.stop_and_collect_capture(initialize, "controller", capture_name)
                 capture_started = False
                 packets = reassemble_packets(local_path)
+                packets = [pkt for pkt in packets if float(pkt.time) >= reboot_requested_at]
                 report_logger.print_success(f"PASS: Packet capture stopped and collected: {local_path}")
 
                 for message_type, message_name in ((MSG_TYPE_TOPOLOGY_DISCOVERY, "Topology Discovery"), (MSG_TYPE_AP_AUTOCONFIG_SEARCH, "AP Autoconfiguration Search")):
@@ -159,7 +160,7 @@ def test_backhaul_wireless_formation_linktype(initialize):
                     if present:
                         report_logger.print_success(f"PASS: {message_name} observed for {agent} (AL MAC {agent_al_mac}); count: {len(present)}")
                     else:
-                        report_logger.print_error(f"FAIL: {message_name} was not observed for {agent} (AL MAC {agent_al_mac}) in the capture")
+                        report_logger.print_error(f"FAIL: {message_name} was not observed for {agent} (AL MAC {agent_al_mac}) in the post-reboot capture")
 
                 verify_topology_exchange(agent, agent_al_mac, controller_al_mac, packets)
                 verify_onboarding_message_order(agent, agent_al_mac, packets, reboot_requested_at)
