@@ -19,7 +19,7 @@ import re
 import time
 from collections import Counter
 from scapy.all import Ether
-from packet_analyzer.ieee1905_utils import MSG_TYPE_TOPOLOGY_DISCOVERY, MSG_TYPE_AP_AUTOCONFIG_SEARCH, MSG_TYPE_AP_AUTOCONFIGURATION_RESPONSE, MSG_TYPE_AP_AUTOCONFIGURATION_WSC, MSG_TYPE_AP_TOPOLOGY_RESPONSE
+from packet_analyzer.ieee1905_utils import MSG_TYPE_TOPOLOGY_DISCOVERY, MSG_TYPE_AP_AUTOCONFIG_SEARCH, MSG_TYPE_AP_AUTOCONFIGURATION_RESPONSE, MSG_TYPE_AP_AUTOCONFIGURATION_WSC, MSG_TYPE_AP_TOPOLOGY_QUERY, MSG_TYPE_AP_TOPOLOGY_RESPONSE
 from packet_analyzer.message_verify import get_message_type_name
 from packet_analyzer.packet_dissector import check_message_presence
 from rdkbmeshzap.common_utils import report_logger
@@ -50,6 +50,10 @@ INVALID_PASSPHRASE = "InvalidBackhaulPassphrase_TC10"
 AGENT_RESTART_COMMAND = "reboot"
 # Time (seconds) to let the agent reboot and attempt the backhaul with the invalid credentials before the observation.
 APPLY_SETTLE_SECONDS = 180
+# Maximum time (seconds) after the reboot request to detect that the old backhaul session is gone (agent unreachable).
+LINK_DOWN_TIMEOUT_SECONDS = 120
+# Controller OneWifi HAL logs (wifiHal.txt); they record every auth frame received from a station, so the agent backhaul STA attempts show up there.
+CONTROLLER_WIFI_LOG_GLOB = "/rdklogs/logs/wifiHal.txt*"
 # Time (seconds) during which the agent must NOT form the backhaul with the invalid credentials.
 OBSERVATION_SECONDS = 240
 # Interval (seconds) between the samples taken during the observation window.
@@ -170,6 +174,27 @@ def get_controller_epoch(initialize):
         output = last_line(ssh_exec(initialize, "controller", "date +%s"))
     return float(output)
 
+def wait_for_agent_link_down(initialize, agent_ip):
+    """
+    Syntax: wait_for_agent_link_down(initialize, agent_ip)
+    Description: Confirm the reboot/link-down boundary after a non-blocking reboot request: poll the agent from the
+        controller until a ping gets no reply. The controller epoch taken just before that failed ping is returned, so
+        the old session (valid credentials) is before it and everything after it belongs to the new boot.
+    Parameters:
+        initialize : Testbed interface.
+        agent_ip : Agent IP address.
+    Return Value: Controller epoch of the confirmed link-down, or None when the agent did not become unreachable within LINK_DOWN_TIMEOUT_SECONDS.
+    Example: wait_for_agent_link_down(initialize, agent_ip)
+    """
+    down = {}
+    def unreachable():
+        checked_at = get_controller_epoch(initialize)
+        if ping_from_controller(initialize, agent_ip, OBSERVATION_PING_COUNT) >= 100.0:
+            down["at"] = checked_at
+        return "at" in down
+    wait_until(unreachable, LINK_DOWN_TIMEOUT_SECONDS)
+    return down.get("at")
+
 def get_agent_1905_messages(packets, agent_al_mac, observation_start, observation_end=None):
     """
     Syntax: get_agent_1905_messages(packets, agent_al_mac, observation_start, observation_end)
@@ -213,20 +238,22 @@ def describe_messages(entries):
     counts = Counter((get_message_type_name(message_type), "agent->controller" if from_agent else "controller->agent") for message_type, from_agent, _ in entries)
     return "; ".join(f"{name} ({direction}) x{count}" for (name, direction), count in sorted(counts.items())) or "none"
 
-def verify_onboarding_message_order(agent, agent_al_mac, packets):
+def verify_onboarding_message_order(agent, agent_al_mac, packets, reboot_requested_at):
     """
-    Syntax: verify_onboarding_message_order(agent, agent_al_mac, packets)
+    Syntax: verify_onboarding_message_order(agent, agent_al_mac, packets, reboot_requested_at)
     Description: Plan check: the Topology Discovery and AP Autoconfiguration Search messages of the agent are followed by the
         Topology Query/Response exchange, i.e. the first Topology Response is not earlier than the first Topology Discovery
-        and the first AP Autoconfiguration Search of the agent.
+        and the first AP Autoconfiguration Search of the agent. Only the current reboot/onboarding attempt is validated:
+        messages before reboot_requested_at (e.g. a routine Topology Response while the agent was still connected) are ignored.
     Parameters:
         agent : Agent device name.
         agent_al_mac : Agent AL MAC address.
         packets : Reassembled capture packets.
+        reboot_requested_at : Controller epoch (get_controller_epoch) taken just before the reboot request.
     Return Value: None. Results are reported through report_logger.
-    Example: verify_onboarding_message_order(agent, agent_al_mac, packets)
+    Example: verify_onboarding_message_order(agent, agent_al_mac, packets, reboot_requested_at)
     """
-    _, entries = get_agent_1905_messages(packets, agent_al_mac, 0)
+    _, entries = get_agent_1905_messages(packets, agent_al_mac, reboot_requested_at)
     first = lambda message_type: min((entry[2] for entry in entries if entry[0] == message_type), default=None)
     discovery, search, response = first(MSG_TYPE_TOPOLOGY_DISCOVERY), first(MSG_TYPE_AP_AUTOCONFIG_SEARCH), first(MSG_TYPE_AP_TOPOLOGY_RESPONSE)
     if None in (discovery, search, response):
@@ -235,6 +262,42 @@ def verify_onboarding_message_order(agent, agent_al_mac, packets):
         report_logger.print_success(f"PASS: Topology Discovery and AP Autoconfiguration Search of {agent} are followed by the Topology Query/Response exchange")
     else:
         report_logger.print_error(f"FAIL: The Topology Response of {agent} was seen before its Topology Discovery or AP Autoconfiguration Search")
+
+def verify_topology_exchange(agent, agent_al_mac, controller_al_mac, packets):
+    """
+    Syntax: verify_topology_exchange(agent, agent_al_mac, controller_al_mac, packets)
+    Description: Plan check: a Topology Query/Response exchange between the controller and the agent is completed, i.e. at
+        least one Topology Response has the same CMDU message ID as a Topology Query, reversed endpoints (the response goes
+        back to the sender of the query) and is not earlier than the query. Retried queries and unrelated responses
+        do not count.
+    Parameters:
+        agent : Agent device name.
+        agent_al_mac : Agent AL MAC address.
+        controller_al_mac : Controller AL MAC address.
+        packets : Reassembled capture packets.
+    Return Value: None. Results are reported through report_logger.
+    Example: verify_topology_exchange(agent, agent_al_mac, controller_al_mac, packets)
+    """
+    peers = {agent_al_mac.lower(), controller_al_mac.lower()}
+    queries, responses = [], []
+    for pkt in packets:
+        if not pkt.haslayer(Ether):
+            continue
+        eth = pkt[Ether]
+        payload = bytes(eth.payload)
+        if len(payload) < 6 or {eth.src.lower(), eth.dst.lower()} != peers:
+            continue
+        entry = (eth.src.lower(), eth.dst.lower(), (payload[4] << 8) | payload[5], float(pkt.time))
+        message_type = (payload[2] << 8) | payload[3]
+        if message_type == MSG_TYPE_AP_TOPOLOGY_QUERY:
+            queries.append(entry)
+        elif message_type == MSG_TYPE_AP_TOPOLOGY_RESPONSE:
+            responses.append(entry)
+    completed = [(q, r) for q in queries for r in responses if r[2] == q[2] and r[0] == q[1] and r[1] == q[0] and r[3] >= q[3]]
+    if completed:
+        report_logger.print_success(f"PASS: Topology Query/Response exchange completed for {agent} (AL MAC {agent_al_mac}); message ID 0x{completed[0][0][2]:04x}, queries: {len(queries)}, responses: {len(responses)}")
+    else:
+        report_logger.print_error(f"FAIL: No completed Topology Query/Response exchange (same message ID, reversed endpoints, response not before query) observed for {agent} (AL MAC {agent_al_mac}); queries: {len(queries)}, responses: {len(responses)}")
 
 def collect_ping_samples(initialize, agent, agent_ip):
     """
@@ -289,12 +352,62 @@ def verify_agent_not_reachable(agent, agent_ip, samples):
     elif not unevaluated_polls:
         report_logger.print_success(f"PASS: {agent} ({agent_ip}) is not reachable from the Controller in all {len(samples)} polls over {OBSERVATION_SECONDS}s")
 
-def verify_onboarding_not_completed(agent, agent_al_mac, controller_al_mac, packets, observation_start, observation_end=None, restart_requested_at=None):
+def get_agent_backhaul_mac(initialize, agent, backhaul_iface):
     """
-    Syntax: verify_onboarding_not_completed(agent, agent_al_mac, controller_al_mac, packets, observation_start, observation_end, restart_requested_at)
-    Description: Plan check: the capture is valid and onboarding does not complete successfully. Onboarding completes with
-        the AP Autoconfiguration WSC (M2) sent by the controller to the agent. The WSC is looked for from the reboot request
-        (restart_requested_at, when given) until the end of the observation window.
+    Syntax: get_agent_backhaul_mac(initialize, agent, backhaul_iface)
+    Description: Read the MAC address of the agent backhaul STA interface (the address it uses to associate with the controller).
+    Parameters:
+        initialize : Testbed interface.
+        agent : Agent device name.
+        backhaul_iface : Agent backhaul interface name.
+    Return Value: Lower case MAC address, or None when it cannot be read.
+    Example: get_agent_backhaul_mac(initialize, "extender1", backhaul_iface)
+    """
+    mac = last_line(ssh_exec(initialize, agent, f"cat /sys/class/net/{backhaul_iface}/address")).lower()
+    return mac if MAC_PATTERN.match(mac) else None
+
+def count_controller_wifi_events(initialize, mac):
+    """
+    Syntax: count_controller_wifi_events(initialize, mac)
+    Description: Count the auth frames the controller logged as received from mac (CONTROLLER_WIFI_LOG_GLOB); each one is a backhaul join attempt.
+    Parameters:
+        initialize : Testbed interface.
+        mac : MAC address to look for.
+    Return Value: Number of matching lines, or None when it cannot be evaluated.
+    Example: count_controller_wifi_events(initialize, backhaul_mac)
+    """
+    count = last_line(ssh_exec(initialize, "controller", f"cat {CONTROLLER_WIFI_LOG_GLOB} 2>/dev/null | grep -ic 'received auth frame from:{mac}'"))
+    return int(count) if count.isdigit() else None
+
+def verify_agent_boot_attempts(initialize, agent, backhaul_mac, events_before):
+    """
+    Syntax: verify_agent_boot_attempts(initialize, agent, backhaul_mac, events_before)
+    Description: Evidence that the agent booted and tried the backhaul with the invalid credentials: the controller Wi-Fi
+        logs gained lines for the agent backhaul MAC during the observation window. Without it the absence checks could
+        pass because the agent is stuck rebooting or its mesh service never started.
+    Parameters:
+        initialize : Testbed interface.
+        agent : Agent device name.
+        backhaul_mac : Agent backhaul STA MAC (get_agent_backhaul_mac).
+        events_before : count_controller_wifi_events value taken at the start of the observation window.
+    Return Value: None. Results are reported through report_logger.
+    Example: verify_agent_boot_attempts(initialize, agent, backhaul_mac, events_before)
+    """
+    events_after = count_controller_wifi_events(initialize, backhaul_mac)
+    if events_before is None or events_after is None:
+        report_logger.print_error(f"FAIL: The controller Wi-Fi logs ({CONTROLLER_WIFI_LOG_GLOB}) could not be evaluated for {agent} ({backhaul_mac}); boot and association attempts are not confirmed")
+    elif events_after > events_before:
+        report_logger.print_success(f"PASS: {agent} is up and attempting the backhaul: {events_after - events_before} new auth frames from {backhaul_mac} logged by the controller during the observation window")
+    else:
+        report_logger.print_error(f"FAIL: No auth frame from {agent} ({backhaul_mac}) logged by the controller during the observation window; the agent may be stuck rebooting or its mesh service did not start, so the missing traffic is not evidence")
+
+def verify_onboarding_not_completed(agent, agent_al_mac, controller_al_mac, packets, observation_start, observation_end=None, link_down_at=None):
+    """
+    Syntax: verify_onboarding_not_completed(agent, agent_al_mac, controller_al_mac, packets, observation_start, observation_end, link_down_at)
+    Description: Plan check: the capture is valid (Topology Discovery from the controller within the observation window, so a
+        capture that stopped early cannot pass on missing traffic) and onboarding does not complete successfully. Onboarding completes with
+        the AP Autoconfiguration WSC (M2) sent by the controller to the agent. The WSC is looked for from the confirmed link-down of the old session
+        (link_down_at, when given) until the end of the observation window.
     Parameters:
         agent : Agent device name.
         agent_al_mac : Agent AL MAC address.
@@ -302,25 +415,26 @@ def verify_onboarding_not_completed(agent, agent_al_mac, controller_al_mac, pack
         packets : Reassembled capture packets.
         observation_start : Controller epoch at which the observation window starts.
         observation_end : Controller epoch at which the observation window ends, or None.
-        restart_requested_at : Controller epoch of the reboot request, or None.
+        link_down_at : Controller epoch of the confirmed link-down (wait_for_agent_link_down), or None.
     Return Value: Tuple (before_observation, during_observation) agent 1905 messages.
     Example: verify_onboarding_not_completed(agent, agent_al_mac, controller_al_mac, packets, start, end, restart)
     """
-    if check_message_presence(packets, MSG_TYPE_TOPOLOGY_DISCOVERY, src_mac=controller_al_mac):
-        report_logger.print_success(f"PASS: The capture is valid: Topology Discovery from the Controller (AL MAC {controller_al_mac}) is present")
+    observation_packets = [pkt for pkt in packets if float(pkt.time) >= observation_start and (observation_end is None or float(pkt.time) <= observation_end)]
+    if check_message_presence(observation_packets, MSG_TYPE_TOPOLOGY_DISCOVERY, src_mac=controller_al_mac):
+        report_logger.print_success(f"PASS: The capture is valid: Topology Discovery from the Controller (AL MAC {controller_al_mac}) is present during the observation window")
     else:
-        report_logger.print_error(f"FAIL: No Topology Discovery from the Controller (AL MAC {controller_al_mac}) in the capture; the capture cannot be used as evidence")
+        report_logger.print_error(f"FAIL: No Topology Discovery from the Controller (AL MAC {controller_al_mac}) during the observation window; the capture cannot be used as evidence")
 
     before, during = get_agent_1905_messages(packets, agent_al_mac, observation_start, observation_end)
-    if restart_requested_at is None:
+    if link_down_at is None:
         since_reboot = during
     else:
-        _, since_reboot = get_agent_1905_messages(packets, agent_al_mac, restart_requested_at, observation_end)
+        _, since_reboot = get_agent_1905_messages(packets, agent_al_mac, link_down_at, observation_end)
     completed = [entry for entry in since_reboot if entry[0] == MSG_TYPE_AP_AUTOCONFIGURATION_WSC and not entry[1]]
     if completed:
-        report_logger.print_error(f"FAIL: Onboarding of {agent} completed successfully with invalid credentials: AP Autoconfiguration WSC from the Controller to {agent_al_mac} x{len(completed)} since the reboot request")
+        report_logger.print_error(f"FAIL: Onboarding of {agent} completed successfully with invalid credentials: AP Autoconfiguration WSC from the Controller to {agent_al_mac} x{len(completed)} since the old session went down")
     else:
-        report_logger.print_success(f"PASS: Onboarding of {agent} did not complete successfully: no AP Autoconfiguration WSC from the Controller to {agent_al_mac} since the reboot request")
+        report_logger.print_success(f"PASS: Onboarding of {agent} did not complete successfully: no AP Autoconfiguration WSC from the Controller to {agent_al_mac} since the old session went down")
     return before, during
 
 def verify_not_in_active_topology(agent, agent_al_mac, agent_messages, samples):
@@ -351,9 +465,9 @@ def verify_not_in_active_topology(agent, agent_al_mac, agent_messages, samples):
     else:
         report_logger.print_success(f"PASS: {agent} (AL MAC {agent_al_mac}) did not rejoin the active topology: no topology messages from the Agent during the observation window")
 
-def review_onboarding_traffic(agent, agent_al_mac, before, during, restart_requested_at, observation_start):
+def review_onboarding_traffic(agent, agent_al_mac, before, during, link_down_at, observation_start):
     """
-    Syntax: review_onboarding_traffic(agent, agent_al_mac, before, during, restart_requested_at, observation_start)
+    Syntax: review_onboarding_traffic(agent, agent_al_mac, before, during, link_down_at, observation_start)
     Description: Plan review: partial onboarding traffic (AP Autoconfiguration Search/Response, or an early WSC) may be
         present with invalid credentials; it is reported as information only. Only a WSC from the controller to the agent
         during the observation window would be a successful onboarding, and that is already failed by the onboarding check.
@@ -362,12 +476,12 @@ def review_onboarding_traffic(agent, agent_al_mac, before, during, restart_reque
         agent_al_mac : Agent AL MAC address.
         before : Agent 1905 messages before the observation window.
         during : Agent 1905 messages during the observation window.
-        restart_requested_at : Controller epoch of the reboot request.
+        link_down_at : Controller epoch of the confirmed link-down.
         observation_start : Controller epoch at which the observation window starts.
     Return Value: None. Information is reported through report_logger.
-    Example: review_onboarding_traffic(agent, agent_al_mac, before, during, restart_requested_at, observation_start)
+    Example: review_onboarding_traffic(agent, agent_al_mac, before, during, link_down_at, observation_start)
     """
     early = [entry for entry in before if entry[0] in ONBOARDING_MESSAGE_TYPES]
-    report_logger.print_info(f"INFO: Onboarding traffic for {agent} (AL MAC {agent_al_mac}) before the observation window (restart requested at {restart_requested_at:.0f}, observation from {observation_start:.0f}); partial onboarding is expected and is informational only: {describe_messages(early)}")
+    report_logger.print_info(f"INFO: Onboarding traffic for {agent} (AL MAC {agent_al_mac}) before the observation window (link down at {link_down_at:.0f}, observation from {observation_start:.0f}); partial onboarding is expected and is informational only: {describe_messages(early)}")
     partial = [entry for entry in during if entry[0] in ONBOARDING_MESSAGE_TYPES]
     report_logger.print_info(f"INFO: Onboarding traffic for {agent} during the observation window (partial onboarding is informational only, not a failure): {describe_messages(partial)}")

@@ -25,7 +25,7 @@ def test_backhaul_wireless_formation_negative_invalidcredentials(initialize):
     EM_Backhaul_Wireless_Formation_Negative_InvalidCredentials: verify that an agent configured with an invalid backhaul
     passphrase does not form the wireless backhaul with the controller. All verification is done from the controller:
       - the Agent is not reachable from the Controller;
-      - onboarding does not complete successfully (no AP Autoconfiguration WSC from the Controller to the Agent);
+      - onboarding does not complete successfully (no AP Autoconfiguration WSC from the Controller to the Agent after the old session went down);
       - the Agent does not rejoin the active topology (final state and no topology messages from the Agent);
       - partial onboarding traffic may be present, but successful onboarding is not observed.
     The Controller station dump / station count is not used: on this platform it is not refreshed when an agent leaves.
@@ -41,6 +41,11 @@ def test_backhaul_wireless_formation_negative_invalidcredentials(initialize):
     The valid credentials are NOT restored by the test; restore them manually on the agent (a backup is kept):
         cp -f /nvram/EasymeshCfg.json.tc10.bak /nvram/EasymeshCfg.json && sync
         reboot, then confirm the agent is reachable from the controller
+
+    Boot/association evidence: SSH to the agent is lost with the backhaul, so the test requires new "received auth frame"
+    entries for the agent backhaul STA MAC in the controller OneWifi HAL log (CONTROLLER_WIFI_LOG_GLOB) during the
+    observation window; otherwise the missing traffic is not accepted as a pass. A log rotation during the window can hide
+    new lines.
     """
     report_logger.print_test("Entering test_backhaul_wireless_formation_negative_invalidcredentials")
     agent = None
@@ -67,6 +72,10 @@ def test_backhaul_wireless_formation_negative_invalidcredentials(initialize):
             return
         if not initialize.get_wireless_backhaul_connection_status(agent, backhaul_iface):
             report_logger.print_error(f"FAIL: Precondition not met: {agent} is not connected on {backhaul_iface}; the test must start from a formed backhaul")
+            return
+        backhaul_mac = get_agent_backhaul_mac(initialize, agent, backhaul_iface)
+        if not backhaul_mac:
+            report_logger.print_error(f"FAIL: The backhaul MAC of {agent} ({backhaul_iface}) could not be read; boot and association attempts could not be verified")
             return
         agent_al_mac = initialize.get_al_mac_address(agent, "cli")
         controller_al_mac = initialize.get_al_mac_address("controller", "cli")
@@ -106,7 +115,7 @@ def test_backhaul_wireless_formation_negative_invalidcredentials(initialize):
         if last_line(applied) != "1":
             report_logger.print_error(f"FAIL: The invalid passphrase could not be written to {AGENT_BACKHAUL_CONFIG} on {agent}: {applied!r}")
             return
-        restart_requested_at = get_controller_epoch(initialize)
+        reboot_sent = time.monotonic()
         try:
             # Existing framework API (as used by the recovery scripts): non-blocking reboot; the configuration was synced above.
             initialize.reboot_device(agent, method="cli")
@@ -115,9 +124,15 @@ def test_backhaul_wireless_formation_negative_invalidcredentials(initialize):
             return
         report_logger.print_success(f"PASS: Invalid backhaul passphrase configured on {agent} and reboot requested (initialize.reboot_device); it boots with the invalid credentials only")
         report_logger.print_info(f"INFO: Waiting {APPLY_SETTLE_SECONDS}s for {agent} to reboot and attempt the backhaul before the observation")
-        time.sleep(APPLY_SETTLE_SECONDS)
+        # Confirmed reboot/link-down boundary: the old session (valid credentials) can still deliver a WSC until the link drops.
+        link_down_at = wait_for_agent_link_down(initialize, agent_ip)
+        if link_down_at is None:
+            report_logger.print_error(f"FAIL: {agent} did not become unreachable within {LINK_DOWN_TIMEOUT_SECONDS}s after the reboot request; the end of the old backhaul session cannot be confirmed")
+            return
+        time.sleep(max(0, APPLY_SETTLE_SECONDS - (time.monotonic() - reboot_sent)))
         # Everything captured from here on is the final state: the old link is gone and only the invalid credentials remain.
         observation_start = get_controller_epoch(initialize)
+        events_before = count_controller_wifi_events(initialize, backhaul_mac)
 
         report_logger.print_step(f"STEP 4 ({agent}): Observe the Controller for {OBSERVATION_SECONDS}s: {agent} must stay unreachable from the Controller")
         samples = collect_ping_samples(initialize, agent, agent_ip)
@@ -125,6 +140,7 @@ def test_backhaul_wireless_formation_negative_invalidcredentials(initialize):
         observation_end = get_controller_epoch(initialize)
         report_logger.print_success(f"PASS: Observation completed: {len(samples)} polls taken over {OBSERVATION_SECONDS}s")
         verify_agent_not_reachable(agent, agent_ip, samples)
+        verify_agent_boot_attempts(initialize, agent, backhaul_mac, events_before)
 
         report_logger.print_step(f"STEP 5 ({agent}): Stop the packet capture on the Controller")
         local_path = device_utils.stop_and_collect_capture(initialize, "controller", capture_name)
@@ -133,9 +149,9 @@ def test_backhaul_wireless_formation_negative_invalidcredentials(initialize):
         report_logger.print_success(f"PASS: Packet capture stopped and collected: {local_path}")
 
         report_logger.print_step(f"STEP 6 ({agent}): Analyze the IEEE 1905 traffic: onboarding not completed, Agent not in the active topology (partial onboarding informational)")
-        before, during = verify_onboarding_not_completed(agent, agent_al_mac, controller_al_mac, packets, observation_start, observation_end, restart_requested_at)
+        before, during = verify_onboarding_not_completed(agent, agent_al_mac, controller_al_mac, packets, observation_start, observation_end, link_down_at)
         verify_not_in_active_topology(agent, agent_al_mac, during, samples)
-        review_onboarding_traffic(agent, agent_al_mac, before, during, restart_requested_at, observation_start)
+        review_onboarding_traffic(agent, agent_al_mac, before, during, link_down_at, observation_start)
     finally:
         if capture_started:
             try:

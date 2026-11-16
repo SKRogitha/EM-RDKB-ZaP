@@ -17,7 +17,7 @@
 
 import re
 import time
-from packet_analyzer.ieee1905_utils import MSG_TYPE_TOPOLOGY_DISCOVERY, MSG_TYPE_TOPOLOGY_NOTIFICATION, MSG_TYPE_AP_AUTOCONFIG_SEARCH, MSG_TYPE_AP_TOPOLOGY_QUERY, MSG_TYPE_AP_TOPOLOGY_RESPONSE
+from packet_analyzer.ieee1905_utils import MSG_TYPE_TOPOLOGY_DISCOVERY, MSG_TYPE_TOPOLOGY_NOTIFICATION, MSG_TYPE_AP_AUTOCONFIG_SEARCH
 from packet_analyzer.packet_dissector import reassemble_packets, check_message_presence
 from rdkbmeshzap.common_utils import device_utils, recovery_utils, report_logger
 from zaero.utils import zi_logger
@@ -71,6 +71,7 @@ def test_backhaul_wireless_formation_linktype(initialize):
                 report_logger.print_success(f"PASS: Packet capture started on the controller; capture name: {capture_name}; interface: {capture_interface}")
 
                 report_logger.print_step(f"STEP 2 ({agent}): Reboot {agent} to trigger wireless backhaul onboarding and wait for it to come back online")
+                reboot_requested_at = get_controller_epoch(initialize)
                 reboot_start = time.monotonic()
                 try:
                     initialize.reboot_device(agent, method="cli")
@@ -160,17 +161,8 @@ def test_backhaul_wireless_formation_linktype(initialize):
                     else:
                         report_logger.print_error(f"FAIL: {message_name} was not observed for {agent} (AL MAC {agent_al_mac}) in the capture")
 
-                # Query may be retried before the response arrives: require at least one query and one response in opposite directions.
-                queries_to_agent = check_message_presence(packets, MSG_TYPE_AP_TOPOLOGY_QUERY, dst_mac=agent_al_mac)
-                responses_from_agent = check_message_presence(packets, MSG_TYPE_AP_TOPOLOGY_RESPONSE, src_mac=agent_al_mac)
-                queries_from_agent = check_message_presence(packets, MSG_TYPE_AP_TOPOLOGY_QUERY, src_mac=agent_al_mac)
-                responses_to_agent = check_message_presence(packets, MSG_TYPE_AP_TOPOLOGY_RESPONSE, dst_mac=agent_al_mac)
-                if (queries_to_agent and responses_from_agent) or (queries_from_agent and responses_to_agent):
-                    report_logger.print_success(f"PASS: Topology Query/Response exchange completed for {agent} (AL MAC {agent_al_mac})")
-                else:
-                    report_logger.print_error(f"FAIL: No completed Topology Query/Response exchange observed for {agent} (AL MAC {agent_al_mac}) in the capture")
-
-                verify_onboarding_message_order(agent, agent_al_mac, packets)
+                verify_topology_exchange(agent, agent_al_mac, controller_al_mac, packets)
+                verify_onboarding_message_order(agent, agent_al_mac, packets, reboot_requested_at)
 
                 present = check_message_presence(packets, MSG_TYPE_TOPOLOGY_NOTIFICATION)
                 if present:
