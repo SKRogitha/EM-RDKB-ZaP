@@ -15,6 +15,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import calendar
 import re
 import time
 from collections import Counter
@@ -54,6 +55,10 @@ APPLY_SETTLE_SECONDS = 180
 LINK_DOWN_TIMEOUT_SECONDS = 120
 # Controller OneWifi HAL logs (wifiHal.txt); they record every auth frame received from a station, so the agent backhaul STA attempts show up there.
 CONTROLLER_WIFI_LOG_GLOB = "/rdklogs/logs/wifiHal.txt*"
+# Leading timestamp formats of the controller wifiHal log lines: (regex with the timestamp in group 1, time.strptime format). Lines without one cannot be tracked.
+WIFI_LOG_TIMESTAMP_FORMATS = ((r"^(\d{6}-\d{2}:\d{2}:\d{2})", "%y%m%d-%H:%M:%S"), (r"^(\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2})", "%Y-%m-%d %H:%M:%S"))
+# Controller log lines that mention the agent backhaul MAC together with a WPA rejection / unauthorized state; tune it to the wording of the platform log.
+WPA_REJECTION_PATTERN = r"deauth|disassoc|4-?way|handshake|wrong (key|pass)|incorrect (key|pass)|mic (failure|fail)|unauthori[sz]ed|auth(entication)? (fail|reject|denied)|assoc(iation)? (fail|reject|denied)|status[ _]?code"
 # Time (seconds) during which the agent must NOT form the backhaul with the invalid credentials.
 OBSERVATION_SECONDS = 240
 # Interval (seconds) between the samples taken during the observation window.
@@ -366,40 +371,104 @@ def get_agent_backhaul_mac(initialize, agent, backhaul_iface):
     mac = last_line(ssh_exec(initialize, agent, f"cat /sys/class/net/{backhaul_iface}/address")).lower()
     return mac if MAC_PATTERN.match(mac) else None
 
-def count_controller_wifi_events(initialize, mac):
+def get_controller_utc_offset(initialize):
     """
-    Syntax: count_controller_wifi_events(initialize, mac)
-    Description: Count the auth frames the controller logged as received from mac (CONTROLLER_WIFI_LOG_GLOB); each one is a backhaul join attempt.
+    Syntax: get_controller_utc_offset(initialize)
+    Description: Read the controller UTC offset (date +%z) so that local timestamps in its logs can be converted to epoch seconds.
+    Parameters:
+        initialize : Testbed interface.
+    Return Value: Offset in seconds east of UTC, or None when it cannot be read.
+    Example: get_controller_utc_offset(initialize)
+    """
+    zone = last_line(ssh_exec(initialize, "controller", "date +%z"))
+    match = re.match(r"^([+-])(\d{2})(\d{2})$", zone)
+    if not match:
+        return None
+    seconds = int(match.group(2)) * 3600 + int(match.group(3)) * 60
+    return -seconds if match.group(1) == "-" else seconds
+
+def parse_log_timestamp(line, utc_offset):
+    """
+    Syntax: parse_log_timestamp(line, utc_offset)
+    Description: Convert the leading timestamp of a controller log line to controller epoch seconds (see WIFI_LOG_TIMESTAMP_FORMATS).
+    Parameters:
+        line : Log line.
+        utc_offset : Controller UTC offset in seconds (get_controller_utc_offset).
+    Return Value: Epoch seconds as a float, or None when the line has no recognised timestamp.
+    Example: parse_log_timestamp(line, utc_offset)
+    """
+    for pattern, time_format in WIFI_LOG_TIMESTAMP_FORMATS:
+        match = re.match(pattern, line.strip())
+        if match:
+            try:
+                return float(calendar.timegm(time.strptime(match.group(1), time_format)) - utc_offset)
+            except ValueError:
+                return None
+    return None
+
+def collect_controller_wifi_events(initialize, mac, since_epoch, until_epoch=None):
+    """
+    Syntax: collect_controller_wifi_events(initialize, mac, since_epoch, until_epoch)
+    Description: Collect the NEW, timestamped controller OneWifi HAL log entries for mac written from since_epoch (until
+        until_epoch, when given), across all files matching CONTROLLER_WIFI_LOG_GLOB (rotated files included). Entries are
+        selected by their own timestamp instead of comparing total match counts, so deleting older lines in a log rotation
+        cannot hide fresh attempts. Lines without a recognised timestamp are not counted.
     Parameters:
         initialize : Testbed interface.
         mac : MAC address to look for.
-    Return Value: Number of matching lines, or None when it cannot be evaluated.
-    Example: count_controller_wifi_events(initialize, backhaul_mac)
+        since_epoch : Controller epoch from which entries count (observation start).
+        until_epoch : Controller epoch up to which entries count, or None.
+    Return Value: Dict with auth_frames (list of epochs), rejections (list of (epoch, line)) and untimestamped (number of
+        matching lines that could not be timed), or None when the controller time zone cannot be read.
+    Example: collect_controller_wifi_events(initialize, backhaul_mac, observation_start, observation_end)
     """
-    count = last_line(ssh_exec(initialize, "controller", f"cat {CONTROLLER_WIFI_LOG_GLOB} 2>/dev/null | grep -ic 'received auth frame from:{mac}'"))
-    return int(count) if count.isdigit() else None
+    utc_offset = get_controller_utc_offset(initialize)
+    if utc_offset is None:
+        return None
+    output = ssh_exec(initialize, "controller", f"grep -a -h -i '{mac}' {CONTROLLER_WIFI_LOG_GLOB} 2>/dev/null")
+    events = {"auth_frames": [], "rejections": [], "untimestamped": 0}
+    for line in output.splitlines():
+        is_auth = re.search(rf"received auth frame from:\s*{re.escape(mac)}", line, re.IGNORECASE) is not None
+        if not is_auth and not re.search(WPA_REJECTION_PATTERN, line, re.IGNORECASE):
+            continue
+        stamp = parse_log_timestamp(line, utc_offset)
+        if stamp is None:
+            events["untimestamped"] += 1
+        elif stamp >= since_epoch and (until_epoch is None or stamp <= until_epoch):
+            (events["auth_frames"] if is_auth else events["rejections"]).append(stamp if is_auth else (stamp, line.strip()))
+    return events
 
-def verify_agent_boot_attempts(initialize, agent, backhaul_mac, events_before):
+def verify_agent_boot_attempts(initialize, agent, backhaul_mac, observation_start, observation_end=None):
     """
-    Syntax: verify_agent_boot_attempts(initialize, agent, backhaul_mac, events_before)
-    Description: Evidence that the agent booted and tried the backhaul with the invalid credentials: the controller Wi-Fi
-        logs gained lines for the agent backhaul MAC during the observation window. Without it the absence checks could
-        pass because the agent is stuck rebooting or its mesh service never started.
+    Syntax: verify_agent_boot_attempts(initialize, agent, backhaul_mac, observation_start, observation_end)
+    Description: Evidence that the agent booted, tried the backhaul with the invalid credentials and was rejected. Both are
+        required in the new timestamped controller Wi-Fi log entries of the observation window (rotation aware, see
+        collect_controller_wifi_events): "received auth frame" entries for the agent backhaul MAC (a join attempt) and
+        Agent-specific WPA rejection / unauthorized-state entries (WPA_REJECTION_PATTERN) for it. Auth frames alone only
+        prove a join attempt, not that authentication failed. Without both, the absence checks are not accepted as a pass.
     Parameters:
         initialize : Testbed interface.
         agent : Agent device name.
         backhaul_mac : Agent backhaul STA MAC (get_agent_backhaul_mac).
-        events_before : count_controller_wifi_events value taken at the start of the observation window.
+        observation_start : Controller epoch at which the observation window starts.
+        observation_end : Controller epoch at which the observation window ends, or None.
     Return Value: None. Results are reported through report_logger.
-    Example: verify_agent_boot_attempts(initialize, agent, backhaul_mac, events_before)
+    Example: verify_agent_boot_attempts(initialize, agent, backhaul_mac, observation_start, observation_end)
     """
-    events_after = count_controller_wifi_events(initialize, backhaul_mac)
-    if events_before is None or events_after is None:
-        report_logger.print_error(f"FAIL: The controller Wi-Fi logs ({CONTROLLER_WIFI_LOG_GLOB}) could not be evaluated for {agent} ({backhaul_mac}); boot and association attempts are not confirmed")
-    elif events_after > events_before:
-        report_logger.print_success(f"PASS: {agent} is up and attempting the backhaul: {events_after - events_before} new auth frames from {backhaul_mac} logged by the controller during the observation window")
+    events = collect_controller_wifi_events(initialize, backhaul_mac, observation_start, observation_end)
+    if events is None:
+        report_logger.print_error(f"FAIL: The controller Wi-Fi logs ({CONTROLLER_WIFI_LOG_GLOB}) could not be evaluated for {agent} ({backhaul_mac}); boot, join attempts and rejection are not confirmed")
+        return
+    if events["untimestamped"]:
+        report_logger.print_info(f"INFO: {events['untimestamped']} controller Wi-Fi log lines for {backhaul_mac} have no recognised timestamp and are not counted")
+    if events["auth_frames"]:
+        report_logger.print_success(f"PASS: {agent} is up and attempting the backhaul: {len(events['auth_frames'])} new auth frames from {backhaul_mac} logged by the controller during the observation window")
     else:
-        report_logger.print_error(f"FAIL: No auth frame from {agent} ({backhaul_mac}) logged by the controller during the observation window; the agent may be stuck rebooting or its mesh service did not start, so the missing traffic is not evidence")
+        report_logger.print_error(f"FAIL: No new auth frame from {agent} ({backhaul_mac}) logged by the controller during the observation window; the agent may be stuck rebooting or its mesh service did not start, so the missing traffic is not evidence")
+    if events["rejections"]:
+        report_logger.print_success(f"PASS: WPA rejection / unauthorized-state evidence for {agent} ({backhaul_mac}) in the controller logs during the observation window: {len(events['rejections'])} entries, e.g. {events['rejections'][0][1]!r}")
+    else:
+        report_logger.print_error(f"FAIL: No WPA rejection or unauthorized-state entry for {agent} ({backhaul_mac}) in the controller logs during the observation window; a join attempt alone does not prove that wireless authentication did not complete (verify through out-of-band Agent access if the controller does not log it)")
 
 def verify_onboarding_not_completed(agent, agent_al_mac, controller_al_mac, packets, observation_start, observation_end=None, link_down_at=None):
     """

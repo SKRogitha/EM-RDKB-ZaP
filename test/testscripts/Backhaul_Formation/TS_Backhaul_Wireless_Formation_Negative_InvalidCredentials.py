@@ -42,10 +42,11 @@ def test_backhaul_wireless_formation_negative_invalidcredentials(initialize):
         cp -f /nvram/EasymeshCfg.json.tc10.bak /nvram/EasymeshCfg.json && sync
         reboot, then confirm the agent is reachable from the controller
 
-    Boot/association evidence: SSH to the agent is lost with the backhaul, so the test requires new "received auth frame"
-    entries for the agent backhaul STA MAC in the controller OneWifi HAL log (CONTROLLER_WIFI_LOG_GLOB) during the
-    observation window; otherwise the missing traffic is not accepted as a pass. A log rotation during the window can hide
-    new lines.
+    Boot/association evidence: SSH to the agent is lost with the backhaul, so the test collects the new, timestamped
+    controller OneWifi HAL log entries (CONTROLLER_WIFI_LOG_GLOB, rotated files included) written after the observation
+    start. It requires "received auth frame" entries for the agent backhaul STA MAC (a join attempt) and Agent-specific
+    WPA rejection / unauthorized-state entries for it (WPA_REJECTION_PATTERN); otherwise the missing traffic is not accepted
+    as a pass. Entries are selected by timestamp, not by comparing total counts, so a log rotation cannot hide them.
     """
     report_logger.print_test("Entering test_backhaul_wireless_formation_negative_invalidcredentials")
     agent = None
@@ -108,7 +109,8 @@ def test_backhaul_wireless_formation_negative_invalidcredentials(initialize):
             report_logger.print_error(f"FAIL: Could not back up {AGENT_BACKHAUL_CONFIG} on {agent} (or Backhaul_KeyPassphrase is missing in it): {backup_check!r}")
             return
         report_logger.print_success(f"PASS: Original {AGENT_BACKHAUL_CONFIG} backed up to {AGENT_BACKHAUL_CONFIG_BACKUP} on {agent}")
-        sed_command = "sed -i 's/\\(\"Backhaul_KeyPassphrase\"[[:space:]]*:[[:space:]]*\"\\)[^\"]*\"/\\1" + INVALID_PASSPHRASE + "\"/' " + AGENT_BACKHAUL_CONFIG + " && sync"
+        # The old value is matched as a JSON string: any char except " and \, or a backslash escape (\" or \\), so an escaped quote cannot end the match early and break the JSON.
+        sed_command = r"""sed -i 's/\("Backhaul_KeyPassphrase"[[:space:]]*:[[:space:]]*"\)\([^"\\]\|\\.\)*"/\1""" + INVALID_PASSPHRASE + '''"/' ''' + AGENT_BACKHAUL_CONFIG + " && sync"
         ssh_exec(initialize, agent, sed_command)
         invalid_applied = True
         applied = ssh_exec(initialize, agent, f"grep -c {INVALID_PASSPHRASE} {AGENT_BACKHAUL_CONFIG}")
@@ -132,7 +134,6 @@ def test_backhaul_wireless_formation_negative_invalidcredentials(initialize):
         time.sleep(max(0, APPLY_SETTLE_SECONDS - (time.monotonic() - reboot_sent)))
         # Everything captured from here on is the final state: the old link is gone and only the invalid credentials remain.
         observation_start = get_controller_epoch(initialize)
-        events_before = count_controller_wifi_events(initialize, backhaul_mac)
 
         report_logger.print_step(f"STEP 4 ({agent}): Observe the Controller for {OBSERVATION_SECONDS}s: {agent} must stay unreachable from the Controller")
         samples = collect_ping_samples(initialize, agent, agent_ip)
@@ -140,7 +141,7 @@ def test_backhaul_wireless_formation_negative_invalidcredentials(initialize):
         observation_end = get_controller_epoch(initialize)
         report_logger.print_success(f"PASS: Observation completed: {len(samples)} polls taken over {OBSERVATION_SECONDS}s")
         verify_agent_not_reachable(agent, agent_ip, samples)
-        verify_agent_boot_attempts(initialize, agent, backhaul_mac, events_before)
+        verify_agent_boot_attempts(initialize, agent, backhaul_mac, observation_start, observation_end)
 
         report_logger.print_step(f"STEP 5 ({agent}): Stop the packet capture on the Controller")
         local_path = device_utils.stop_and_collect_capture(initialize, "controller", capture_name)
