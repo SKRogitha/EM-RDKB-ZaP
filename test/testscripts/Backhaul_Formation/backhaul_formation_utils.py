@@ -1,0 +1,373 @@
+# If not stated otherwise in this file or this component LICENSE file the
+# following copyright and licenses apply:
+#
+# Copyright 2026 RDK Management
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+import re
+import time
+from collections import Counter
+from scapy.all import Ether
+from packet_analyzer.ieee1905_utils import MSG_TYPE_TOPOLOGY_DISCOVERY, MSG_TYPE_AP_AUTOCONFIG_SEARCH, MSG_TYPE_AP_AUTOCONFIGURATION_RESPONSE, MSG_TYPE_AP_AUTOCONFIGURATION_WSC, MSG_TYPE_AP_TOPOLOGY_RESPONSE
+from packet_analyzer.message_verify import get_message_type_name
+from packet_analyzer.packet_dissector import check_message_presence
+from rdkbmeshzap.common_utils import report_logger
+
+# Settings shared by the Backhaul_Formation test scripts.
+MAC_PATTERN = re.compile(r"^[0-9a-f]{2}(:[0-9a-f]{2}){5}$", re.IGNORECASE)
+
+# Linktype test settings.
+# Time (seconds) to keep capturing so the IEEE 1905 messages can be collected (test plan: 60 seconds).
+ONBOARDING_SETTLE_SECONDS = 60
+# Maximum time (seconds) to wait for the wireless backhaul to be connected after the agent has recovered.
+ONBOARDING_TIMEOUT_SECONDS = 240
+# Interval (seconds) between consecutive status checks.
+POLL_INTERVAL_SECONDS = 10
+# Number of ICMP echo requests sent to the agent from the controller (test plan: ping <agent_ip>).
+PING_COUNT = "3"
+
+# Invalid credentials test settings.
+# Agent under test. None selects the first enabled extender from infra.yaml.
+AGENT = None
+# File on the agent that holds the provisioned backhaul credentials (Backhaul_SSID / Backhaul_KeyPassphrase).
+AGENT_BACKHAUL_CONFIG = "/nvram/EasymeshCfg.json"
+# Copy of the original file, kept on the agent so the valid credentials can be restored manually after the test.
+AGENT_BACKHAUL_CONFIG_BACKUP = "/nvram/EasymeshCfg.json.tc10.bak"
+# Deliberately wrong backhaul passphrase. It must not contain the characters / & \ (used inside a sed expression).
+INVALID_PASSPHRASE = "InvalidBackhaulPassphrase_TC10"
+# Command that applies the restored configuration; used only in the manual restore instructions (plan: reboot the Agent).
+AGENT_RESTART_COMMAND = "reboot"
+# Time (seconds) to let the agent reboot and attempt the backhaul with the invalid credentials before the observation.
+APPLY_SETTLE_SECONDS = 180
+# Time (seconds) during which the agent must NOT form the backhaul with the invalid credentials.
+OBSERVATION_SECONDS = 240
+# Interval (seconds) between the samples taken during the observation window.
+OBSERVATION_POLL_INTERVAL_SECONDS = 30
+# Number of ICMP echo requests sent to the agent from the controller during the observation window.
+OBSERVATION_PING_COUNT = "2"
+# Onboarding related CMDUs. With invalid credentials the first ones may still be exchanged (partial onboarding) while
+# the agent is going down for the reboot. They are informational evidence only; onboarding
+# is considered completed only by the AP Autoconfiguration WSC sent by the controller to the agent.
+ONBOARDING_MESSAGE_TYPES = (MSG_TYPE_AP_AUTOCONFIG_SEARCH, MSG_TYPE_AP_AUTOCONFIGURATION_RESPONSE, MSG_TYPE_AP_AUTOCONFIGURATION_WSC)
+
+def wait_until(check, timeout=ONBOARDING_TIMEOUT_SECONDS):
+    """
+    Syntax: wait_until(check, timeout)
+    Description: Poll check() every POLL_INTERVAL_SECONDS until it returns a truthy value or the timeout expires.
+        Exceptions raised by check() are treated as "not ready yet".
+    Parameters:
+        check : Callable evaluated on every poll.
+        timeout : Maximum time in seconds to wait.
+    Return Value: True when check() succeeded in time; otherwise False.
+    Example: wait_until(lambda: initialize.get_wireless_backhaul_connection_status(agent, iface))
+    """
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            if check():
+                return True
+        except Exception as error:
+            report_logger.print_info(f"INFO: Not ready yet: {error}")
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        time.sleep(min(POLL_INTERVAL_SECONDS, remaining))
+
+def last_line(text):
+    """
+    Syntax: last_line(text)
+    Description: Return the last non-empty line of text.
+    Parameters:
+        text : Command output.
+    Return Value: The stripped last non-empty line, or an empty string.
+    Example: last_line(ssh_exec(initialize, "extender1", "grep -c key file"))
+    """
+    lines = [line.strip() for line in str(text).splitlines() if line.strip()]
+    return lines[-1] if lines else ""
+
+def ssh_exec(initialize, device, command):
+    """
+    Syntax: ssh_exec(initialize, device, command)
+    Description: Run a command on a device over its framework connection.
+        Uses the same API as rdkbmeshzap/cli/feature_interface_cli.py: execute_command(device, command, return_stderr=True).
+        stderr is only logged, so callers that check the last output line are not affected by it.
+    Parameters:
+        initialize : Testbed interface.
+        device : Device name.
+        command : Shell command to run.
+    Return Value: The command stdout as a string.
+    Example: ssh_exec(initialize, "controller", "date +%s")
+    """
+    connection = initialize.read_from_database(device, "connection")
+    connection_obj = initialize.get_connection_module_object(connection)
+    output, error = connection_obj.execute_command(device, command, return_stderr=True)
+    if error and str(error).strip():
+        report_logger.print_info(f"INFO: stderr of '{command}' on {device}: {str(error).strip()}")
+    return str(output or "")
+
+def ping_from_controller(initialize, dst_ip, count):
+    """
+    Syntax: ping_from_controller(initialize, dst_ip, count)
+    Description: Ping dst_ip from the controller and return the packet loss. initialize.ping_ipv4 cannot be used for the
+        controller: it loads zaero.<platform> and the controller platform is rdkbmeshzap, which is not a zaero module.
+    Parameters:
+        initialize : Testbed interface.
+        dst_ip : Destination IPv4 address.
+        count : Number of ICMP echo requests.
+    Return Value: Packet loss in percent as a float. Raises ValueError when the loss is not in the output.
+    Example: ping_from_controller(initialize, agent_ip, PING_COUNT)
+    """
+    output = ssh_exec(initialize, "controller", f"ping -4 -c {count} -W 2 {dst_ip}")
+    match = re.search(r"(\d+(?:\.\d+)?)% packet loss", output)
+    if not match:
+        raise ValueError(f"packet loss not found in the ping output: {output.strip()!r}")
+    return float(match.group(1))
+
+def get_fdb_ports(initialize, agent, mac):
+    """
+    Syntax: get_fdb_ports(initialize, agent, mac)
+    Description: Find the bridge ports on which the agent bridge has learned mac (bridge fdb show).
+        The port that leads to the controller is the agent's backhaul, so its type gives the backhaul link type.
+    Parameters:
+        initialize : Testbed interface.
+        agent : Agent device name.
+        mac : MAC address to look up.
+    Return Value: Tuple (ports, output) with the learned ports and the raw command output.
+    Example: get_fdb_ports(initialize, "extender1", controller_al_mac)
+    """
+    output = ssh_exec(initialize, agent, f"bridge fdb show | grep -i '{mac}'")
+    ports = []
+    for line in output.splitlines():
+        if line.lower().startswith(mac.lower()):
+            port_match = re.search(r"\bdev\s+(\S+)", line)
+            if port_match and port_match.group(1) not in ports:
+                ports.append(port_match.group(1))
+    return ports, output
+
+def get_controller_epoch(initialize):
+    """
+    Syntax: get_controller_epoch(initialize)
+    Description: Read the current time (epoch seconds) on the controller. The capture is taken on the controller, so its
+        packet timestamps are on the same clock; using it avoids any clock offset between the test host and the controller.
+    Parameters:
+        initialize : Testbed interface.
+    Return Value: Controller epoch time as a float.
+    Example: get_controller_epoch(initialize)
+    """
+    output = last_line(ssh_exec(initialize, "controller", "date +%s.%N"))
+    if not re.match(r"^\d+\.\d+$", output):
+        output = last_line(ssh_exec(initialize, "controller", "date +%s"))
+    return float(output)
+
+def get_agent_1905_messages(packets, agent_al_mac, observation_start, observation_end=None):
+    """
+    Syntax: get_agent_1905_messages(packets, agent_al_mac, observation_start, observation_end)
+    Description: Collect the IEEE 1905 messages sent by or addressed to the agent AL MAC, split at observation_start
+        (controller epoch). Packets after observation_end (controller epoch, when given) are ignored.
+    Parameters:
+        packets : Reassembled capture packets.
+        agent_al_mac : Agent AL MAC address.
+        observation_start : Controller epoch at which the observation window starts.
+        observation_end : Controller epoch at which the observation window ends, or None.
+    Return Value: Tuple (before_observation, during_observation); every entry is (message_type, sent_by_agent, timestamp).
+    Example: get_agent_1905_messages(packets, agent_al_mac, observation_start, observation_end)
+    """
+    agent_mac = agent_al_mac.lower()
+    before, during = [], []
+    for pkt in packets:
+        if not pkt.haslayer(Ether):
+            continue
+        eth = pkt[Ether]
+        from_agent = eth.src.lower() == agent_mac
+        if not from_agent and eth.dst.lower() != agent_mac:
+            continue
+        payload = bytes(eth.payload)
+        if len(payload) < 4:
+            continue
+        entry = ((payload[2] << 8) | payload[3], from_agent, float(pkt.time))
+        if observation_end is not None and entry[2] > observation_end:
+            continue
+        (during if entry[2] >= observation_start else before).append(entry)
+    return before, during
+
+def describe_messages(entries):
+    """
+    Syntax: describe_messages(entries)
+    Description: Describe IEEE 1905 message entries as 'Message name (direction) xcount'.
+    Parameters:
+        entries : Entries returned by get_agent_1905_messages.
+    Return Value: Compact description string, or "none".
+    Example: describe_messages(during)
+    """
+    counts = Counter((get_message_type_name(message_type), "agent->controller" if from_agent else "controller->agent") for message_type, from_agent, _ in entries)
+    return "; ".join(f"{name} ({direction}) x{count}" for (name, direction), count in sorted(counts.items())) or "none"
+
+def verify_onboarding_message_order(agent, agent_al_mac, packets):
+    """
+    Syntax: verify_onboarding_message_order(agent, agent_al_mac, packets)
+    Description: Plan check: the Topology Discovery and AP Autoconfiguration Search messages of the agent are followed by the
+        Topology Query/Response exchange, i.e. the first Topology Response is not earlier than the first Topology Discovery
+        and the first AP Autoconfiguration Search of the agent.
+    Parameters:
+        agent : Agent device name.
+        agent_al_mac : Agent AL MAC address.
+        packets : Reassembled capture packets.
+    Return Value: None. Results are reported through report_logger.
+    Example: verify_onboarding_message_order(agent, agent_al_mac, packets)
+    """
+    _, entries = get_agent_1905_messages(packets, agent_al_mac, 0)
+    first = lambda message_type: min((entry[2] for entry in entries if entry[0] == message_type), default=None)
+    discovery, search, response = first(MSG_TYPE_TOPOLOGY_DISCOVERY), first(MSG_TYPE_AP_AUTOCONFIG_SEARCH), first(MSG_TYPE_AP_TOPOLOGY_RESPONSE)
+    if None in (discovery, search, response):
+        report_logger.print_error(f"FAIL: The message order for {agent} cannot be verified; Topology Discovery, AP Autoconfiguration Search or Topology Response is missing")
+    elif response >= discovery and response >= search:
+        report_logger.print_success(f"PASS: Topology Discovery and AP Autoconfiguration Search of {agent} are followed by the Topology Query/Response exchange")
+    else:
+        report_logger.print_error(f"FAIL: The Topology Response of {agent} was seen before its Topology Discovery or AP Autoconfiguration Search")
+
+def collect_ping_samples(initialize, agent, agent_ip):
+    """
+    Syntax: collect_ping_samples(initialize, agent, agent_ip)
+    Description: Observation window: every OBSERVATION_POLL_INTERVAL_SECONDS, for OBSERVATION_SECONDS, sample from the
+        controller whether the agent answers a ping. The controller station dump / station count is not used: on this
+        platform it is not refreshed when an agent leaves (stale entries stay until the controller reboots).
+        Nothing is judged here.
+    Parameters:
+        initialize : Testbed interface.
+        agent : Agent device name.
+        agent_ip : Agent IP address.
+    Return Value: List of sample dicts with the keys poll, elapsed, reachable and ping_output.
+    Example: collect_ping_samples(initialize, "extender1", agent_ip)
+    """
+    samples = []
+    started = time.monotonic()
+    deadline = started + OBSERVATION_SECONDS
+    while True:
+        sample = {"poll": len(samples) + 1, "elapsed": time.monotonic() - started}
+        try:
+            loss = ping_from_controller(initialize, agent_ip, OBSERVATION_PING_COUNT)
+            sample["reachable"], sample["ping_output"] = loss < 100.0, f"packet loss: {loss}%"
+        except Exception as error:
+            sample["reachable"], sample["ping_output"] = None, f"ping could not be evaluated: {error}"
+        samples.append(sample)
+        report_logger.print_info(f"INFO: Poll {sample['poll']} (+{sample['elapsed']:.0f}s): {agent} reachable from the controller: {sample['reachable']}")
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return samples
+        time.sleep(min(OBSERVATION_POLL_INTERVAL_SECONDS, remaining))
+
+def verify_agent_not_reachable(agent, agent_ip, samples):
+    """
+    Syntax: verify_agent_not_reachable(agent, agent_ip, samples)
+    Description: Plan check: the agent is not reachable from the controller (every sample, including the final one).
+    Parameters:
+        agent : Agent device name.
+        agent_ip : Agent IP address.
+        samples : Samples returned by collect_ping_samples.
+    Return Value: None. Results are reported through report_logger.
+    Example: verify_agent_not_reachable(agent, agent_ip, samples)
+    """
+    reachable_polls = [s for s in samples if s["reachable"]]
+    unevaluated_polls = [s for s in samples if s["reachable"] is None]
+    for sample in unevaluated_polls:
+        report_logger.print_error(f"FAIL: Poll {sample['poll']}: ping from the Controller to {agent} ({agent_ip}) could not be evaluated: {sample['ping_output']}")
+    for sample in reachable_polls:
+        report_logger.print_error(f"FAIL: Poll {sample['poll']}: {agent} ({agent_ip}) is reachable from the Controller although its backhaul credentials are invalid:\n{sample['ping_output']}")
+    if reachable_polls:
+        report_logger.print_error(f"FAIL: {agent} is reachable from the Controller in {len(reachable_polls)} of {len(samples)} polls; the backhaul link must not form with invalid credentials")
+    elif not unevaluated_polls:
+        report_logger.print_success(f"PASS: {agent} ({agent_ip}) is not reachable from the Controller in all {len(samples)} polls over {OBSERVATION_SECONDS}s")
+
+def verify_onboarding_not_completed(agent, agent_al_mac, controller_al_mac, packets, observation_start, observation_end=None, restart_requested_at=None):
+    """
+    Syntax: verify_onboarding_not_completed(agent, agent_al_mac, controller_al_mac, packets, observation_start, observation_end, restart_requested_at)
+    Description: Plan check: the capture is valid and onboarding does not complete successfully. Onboarding completes with
+        the AP Autoconfiguration WSC (M2) sent by the controller to the agent. The WSC is looked for from the reboot request
+        (restart_requested_at, when given) until the end of the observation window.
+    Parameters:
+        agent : Agent device name.
+        agent_al_mac : Agent AL MAC address.
+        controller_al_mac : Controller AL MAC address.
+        packets : Reassembled capture packets.
+        observation_start : Controller epoch at which the observation window starts.
+        observation_end : Controller epoch at which the observation window ends, or None.
+        restart_requested_at : Controller epoch of the reboot request, or None.
+    Return Value: Tuple (before_observation, during_observation) agent 1905 messages.
+    Example: verify_onboarding_not_completed(agent, agent_al_mac, controller_al_mac, packets, start, end, restart)
+    """
+    if check_message_presence(packets, MSG_TYPE_TOPOLOGY_DISCOVERY, src_mac=controller_al_mac):
+        report_logger.print_success(f"PASS: The capture is valid: Topology Discovery from the Controller (AL MAC {controller_al_mac}) is present")
+    else:
+        report_logger.print_error(f"FAIL: No Topology Discovery from the Controller (AL MAC {controller_al_mac}) in the capture; the capture cannot be used as evidence")
+
+    before, during = get_agent_1905_messages(packets, agent_al_mac, observation_start, observation_end)
+    if restart_requested_at is None:
+        since_reboot = during
+    else:
+        _, since_reboot = get_agent_1905_messages(packets, agent_al_mac, restart_requested_at, observation_end)
+    completed = [entry for entry in since_reboot if entry[0] == MSG_TYPE_AP_AUTOCONFIGURATION_WSC and not entry[1]]
+    if completed:
+        report_logger.print_error(f"FAIL: Onboarding of {agent} completed successfully with invalid credentials: AP Autoconfiguration WSC from the Controller to {agent_al_mac} x{len(completed)} since the reboot request")
+    else:
+        report_logger.print_success(f"PASS: Onboarding of {agent} did not complete successfully: no AP Autoconfiguration WSC from the Controller to {agent_al_mac} since the reboot request")
+    return before, during
+
+def verify_not_in_active_topology(agent, agent_al_mac, agent_messages, samples):
+    """
+    Syntax: verify_not_in_active_topology(agent, agent_al_mac, agent_messages, samples)
+    Description: Plan check: the agent does not rejoin the active topology. It must not be reachable from the controller in
+        the final sample, and must not send 1905 messages other than AP Autoconfiguration (Topology Discovery,
+        Topology Notification, Topology Response, ...) during the observation window.
+    Parameters:
+        agent : Agent device name.
+        agent_al_mac : Agent AL MAC address.
+        agent_messages : Agent 1905 messages seen during the observation window.
+        samples : Samples returned by collect_ping_samples.
+    Return Value: None. Results are reported through report_logger.
+    Example: verify_not_in_active_topology(agent, agent_al_mac, during, samples)
+    """
+    final = samples[-1]
+    if final["reachable"] is None:
+        report_logger.print_error(f"FAIL: The final ping from the Controller to {agent} could not be evaluated: {final['ping_output']}")
+    elif final["reachable"]:
+        report_logger.print_error(f"FAIL: {agent} rejoined the active topology: it is reachable from the Controller in the final poll")
+    else:
+        report_logger.print_success(f"PASS: In the final poll {agent} is not reachable from the Controller")
+
+    topology = [entry for entry in agent_messages if entry[1] and entry[0] not in ONBOARDING_MESSAGE_TYPES]
+    if topology:
+        report_logger.print_error(f"FAIL: {agent} (AL MAC {agent_al_mac}) rejoined the active topology: 1905 messages from the Agent during the observation window: {describe_messages(topology)}")
+    else:
+        report_logger.print_success(f"PASS: {agent} (AL MAC {agent_al_mac}) did not rejoin the active topology: no topology messages from the Agent during the observation window")
+
+def review_onboarding_traffic(agent, agent_al_mac, before, during, restart_requested_at, observation_start):
+    """
+    Syntax: review_onboarding_traffic(agent, agent_al_mac, before, during, restart_requested_at, observation_start)
+    Description: Plan review: partial onboarding traffic (AP Autoconfiguration Search/Response, or an early WSC) may be
+        present with invalid credentials; it is reported as information only. Only a WSC from the controller to the agent
+        during the observation window would be a successful onboarding, and that is already failed by the onboarding check.
+    Parameters:
+        agent : Agent device name.
+        agent_al_mac : Agent AL MAC address.
+        before : Agent 1905 messages before the observation window.
+        during : Agent 1905 messages during the observation window.
+        restart_requested_at : Controller epoch of the reboot request.
+        observation_start : Controller epoch at which the observation window starts.
+    Return Value: None. Information is reported through report_logger.
+    Example: review_onboarding_traffic(agent, agent_al_mac, before, during, restart_requested_at, observation_start)
+    """
+    early = [entry for entry in before if entry[0] in ONBOARDING_MESSAGE_TYPES]
+    report_logger.print_info(f"INFO: Onboarding traffic for {agent} (AL MAC {agent_al_mac}) before the observation window (restart requested at {restart_requested_at:.0f}, observation from {observation_start:.0f}); partial onboarding is expected and is informational only: {describe_messages(early)}")
+    partial = [entry for entry in during if entry[0] in ONBOARDING_MESSAGE_TYPES]
+    report_logger.print_info(f"INFO: Onboarding traffic for {agent} during the observation window (partial onboarding is informational only, not a failure): {describe_messages(partial)}")
