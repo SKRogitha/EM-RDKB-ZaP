@@ -57,8 +57,10 @@ LINK_DOWN_TIMEOUT_SECONDS = 120
 CONTROLLER_WIFI_LOG_GLOB = "/rdklogs/logs/wifiHal.txt*"
 # Leading timestamp formats of the controller wifiHal log lines: (regex with the timestamp in group 1, time.strptime format). Lines without one cannot be tracked.
 WIFI_LOG_TIMESTAMP_FORMATS = ((r"^(\d{6}-\d{2}:\d{2}:\d{2})", "%y%m%d-%H:%M:%S"), (r"^(\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2})", "%Y-%m-%d %H:%M:%S"))
-# Controller log lines that mention the agent backhaul MAC together with a WPA rejection / unauthorized state; tune it to the wording of the platform log.
-WPA_REJECTION_PATTERN = r"deauth|disassoc|4-?way|handshake|wrong (key|pass)|incorrect (key|pass)|mic (failure|fail)|unauthori[sz]ed|auth(entication)? (fail|reject|denied)|assoc(iation)? (fail|reject|denied)|status[ _]?code"
+# Controller log lines that mention the agent backhaul MAC together with an explicit WPA rejection / unauthorized state (deauth/disassoc, a handshake/auth/assoc line with failure or timeout wording, wrong key, MIC failure, or a nonzero status code); tune it to the wording of the platform log.
+WPA_REJECTION_PATTERN = r"deauth|disassoc|(4-?way|handshake|auth(entication)?|assoc(iation)?)\b.*(fail|reject|denied|time(d)? ?out)|(wrong|incorrect) (key|pass)|mic (failure|fail)|unauthori[sz]ed|status[ _]?code\s*[=:]?\s*[1-9]\d*"
+# Lines that report success are never rejection evidence (e.g. "pairwise key handshake completed", status_code=0), even if they also contain a rejection keyword.
+WPA_SUCCESS_PATTERN = r"\b(completed|succeeded|success|successful(ly)?)\b|status[ _]?code\s*[=:]?\s*0\b"
 # Time (seconds) during which the agent must NOT form the backhaul with the invalid credentials.
 OBSERVATION_SECONDS = 240
 # Interval (seconds) between the samples taken during the observation window.
@@ -401,7 +403,7 @@ def parse_log_timestamp(line, utc_offset):
         match = re.match(pattern, line.strip())
         if match:
             try:
-                return float(calendar.timegm(time.strptime(match.group(1), time_format)) - utc_offset)
+                return float(calendar.timegm(time.strptime(match.group(1).replace("T", " "), time_format)) - utc_offset)
             except ValueError:
                 return None
     return None
@@ -429,7 +431,7 @@ def collect_controller_wifi_events(initialize, mac, since_epoch, until_epoch=Non
     events = {"auth_frames": [], "rejections": [], "untimestamped": 0}
     for line in output.splitlines():
         is_auth = re.search(rf"received auth frame from:\s*{re.escape(mac)}", line, re.IGNORECASE) is not None
-        if not is_auth and not re.search(WPA_REJECTION_PATTERN, line, re.IGNORECASE):
+        if not is_auth and (not re.search(WPA_REJECTION_PATTERN, line, re.IGNORECASE) or re.search(WPA_SUCCESS_PATTERN, line, re.IGNORECASE)):
             continue
         stamp = parse_log_timestamp(line, utc_offset)
         if stamp is None:
