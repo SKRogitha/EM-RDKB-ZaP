@@ -71,7 +71,6 @@ def test_backhaul_wireless_formation_linktype(initialize):
                 report_logger.print_success(f"PASS: Packet capture started on the controller; capture name: {capture_name}; interface: {capture_interface}")
 
                 report_logger.print_step(f"STEP 2 ({agent}): Reboot {agent} to trigger wireless backhaul onboarding and wait for it to come back online")
-                reboot_requested_at = get_controller_epoch(initialize)
                 reboot_start = time.monotonic()
                 try:
                     initialize.reboot_device(agent, method="cli")
@@ -79,6 +78,12 @@ def test_backhaul_wireless_formation_linktype(initialize):
                     report_logger.print_error(f"FAIL: The reboot command could not be sent to {agent}: {error}")
                     continue
                 report_logger.print_info(f"INFO: {agent} reboot command executed; waiting for it to recover")
+                # Confirm the old session is gone before recovery, so recovery cannot succeed against the old boot.
+                link_down_at = wait_for_agent_link_down(initialize, agent_ip)
+                if link_down_at is None:
+                    report_logger.print_error(f"FAIL: {agent} ({agent_ip}) did not become unreachable within {LINK_DOWN_TIMEOUT_SECONDS}s after the reboot request; the reboot cannot be verified")
+                    continue
+                report_logger.print_info(f"INFO: {agent} link down confirmed at controller epoch {link_down_at:.3f}; waiting for it to recover")
                 # Existing recovery API: reconnects the agent and verifies its services within the agent recovery KPI.
                 recovery_times = {}
                 recovery_result = recovery_utils.recover_device(initialize, agent, reboot_start, recovery_times, "agent")
@@ -147,7 +152,7 @@ def test_backhaul_wireless_formation_linktype(initialize):
                 local_path = device_utils.stop_and_collect_capture(initialize, "controller", capture_name)
                 capture_started = False
                 packets = reassemble_packets(local_path)
-                packets = [pkt for pkt in packets if float(pkt.time) >= reboot_requested_at]
+                packets = [pkt for pkt in packets if float(pkt.time) >= link_down_at]
                 report_logger.print_success(f"PASS: Packet capture stopped and collected: {local_path}")
 
                 for message_type, message_name in ((MSG_TYPE_TOPOLOGY_DISCOVERY, "Topology Discovery"), (MSG_TYPE_AP_AUTOCONFIG_SEARCH, "AP Autoconfiguration Search")):
@@ -158,7 +163,7 @@ def test_backhaul_wireless_formation_linktype(initialize):
                         report_logger.print_error(f"FAIL: {message_name} was not observed for {agent} (AL MAC {agent_al_mac}) in the post-reboot capture")
 
                 verify_topology_exchange(agent, agent_al_mac, controller_al_mac, packets)
-                verify_onboarding_message_order(agent, agent_al_mac, packets, reboot_requested_at)
+                verify_onboarding_message_order(agent, agent_al_mac, packets, link_down_at)
 
                 present = check_message_presence(packets, MSG_TYPE_TOPOLOGY_NOTIFICATION)
                 if present:
