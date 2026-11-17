@@ -59,11 +59,15 @@ CONTROLLER_WIFI_LOG_GLOB = "/rdklogs/logs/wifiHal.txt*"
 WIFI_LOG_TIMESTAMP_FORMATS = ((r"^(\d{6}-\d{2}:\d{2}:\d{2})", "%y%m%d-%H:%M:%S"), (r"^(\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2})", "%Y-%m-%d %H:%M:%S"))
 # Controller log lines that mention the agent backhaul MAC together with an explicit WPA rejection / unauthorized state (deauth/disassoc, a handshake/auth/assoc line with failure or timeout wording, wrong key, MIC failure, or a nonzero status code); tune it to the wording of the platform log.
 WPA_REJECTION_PATTERN = r"deauth|disassoc|(4-?way|handshake|auth(entication)?|assoc(iation)?)\b.*(fail|reject|denied|time(d)? ?out)|(wrong|incorrect) (key|pass)|mic (failure|fail)|unauthori[sz]ed|status[ _]?code\s*[=:]?\s*[1-9]\d*"
+# Controller reply that rejects the agent: the OneWifi HAL logs the auth frame it sends to the agent with a status code ("sc"); a nonzero sc in the seq:2 reply (e.g. "send auth frame from:<bssid> to:<agent mac> alg:3 seq:2 sc:15") is a rejected authentication. {mac} is replaced by the escaped agent backhaul MAC. The seq:1 commit codes (e.g. sc:126) and the agent's own frames are not matched.
+WPA_AUTH_REJECT_TEMPLATE = r"send auth frame from:\S+ to:{mac}\b.*\bseq:2\s+sc:(?!0\b)\d+"
 # Lines that report success are never rejection evidence (e.g. "pairwise key handshake completed", status_code=0), even if they also contain a rejection keyword.
 WPA_SUCCESS_PATTERN = r"\b(completed|succeeded|success|successful(ly)?)\b|status[ _]?code\s*[=:]?\s*0\b"
 # Lines that show the agent completed the WPA handshake / reached the authorized state. With invalid credentials this must never happen: it means the passphrase was accepted, so it fails the test (never discard these lines).
 WPA_HANDSHAKE_COMPLETED_PATTERN = r"(4-?way|pairwise|handshake|\bptk\b|\bgtk\b)\b.*\b(complete[d]?|success(ful(ly)?)?|established|done)\b|\bport (is )?authori[sz]ed\b|\bstate\s*[=:]?\s*authori[sz]ed\b"
 WPA_HANDSHAKE_NEGATION_PATTERN = r"\b(not|never|fail(ed|ure)?|unsuccessful)\b"
+# Tolerance (seconds) applied before the link-down time when looking for completed handshakes (log timestamps have 1 s resolution).
+COMPLETION_START_TOLERANCE_SECONDS = 1.0
 # Time (seconds) during which the agent must NOT form the backhaul with the invalid credentials.
 OBSERVATION_SECONDS = 240
 # Interval (seconds) between the samples taken during the observation window.
@@ -435,7 +439,8 @@ def collect_controller_wifi_events(initialize, mac, since_epoch, until_epoch=Non
     for line in output.splitlines():
         is_auth = re.search(rf"received auth frame from:\s*{re.escape(mac)}", line, re.IGNORECASE) is not None
         is_completed = not is_auth and re.search(WPA_HANDSHAKE_COMPLETED_PATTERN, line, re.IGNORECASE) is not None and re.search(WPA_HANDSHAKE_NEGATION_PATTERN, line, re.IGNORECASE) is None
-        is_rejection = not is_auth and not is_completed and re.search(WPA_REJECTION_PATTERN, line, re.IGNORECASE) is not None and re.search(WPA_SUCCESS_PATTERN, line, re.IGNORECASE) is None
+        is_auth_reject = re.search(WPA_AUTH_REJECT_TEMPLATE.format(mac=re.escape(mac)), line, re.IGNORECASE) is not None
+        is_rejection = not is_auth and not is_completed and (is_auth_reject or (re.search(WPA_REJECTION_PATTERN, line, re.IGNORECASE) is not None and re.search(WPA_SUCCESS_PATTERN, line, re.IGNORECASE) is None))
         if not (is_auth or is_completed or is_rejection):
             continue
         stamp = parse_log_timestamp(line, utc_offset)
@@ -450,31 +455,41 @@ def collect_controller_wifi_events(initialize, mac, since_epoch, until_epoch=Non
                 events["rejections"].append((stamp, line.strip()))
     return events
 
-def verify_agent_boot_attempts(initialize, agent, backhaul_mac, observation_start, observation_end=None):
+def verify_agent_boot_attempts(initialize, agent, backhaul_mac, observation_start, observation_end=None, link_down_at=None):
     """
-    Syntax: verify_agent_boot_attempts(initialize, agent, backhaul_mac, observation_start, observation_end)
+    Syntax: verify_agent_boot_attempts(initialize, agent, backhaul_mac, observation_start, observation_end, link_down_at)
     Description: Evidence that the agent booted, tried the backhaul with the invalid credentials and was rejected. Both are
         required in the new timestamped controller Wi-Fi log entries of the observation window (rotation aware, see
         collect_controller_wifi_events): "received auth frame" entries for the agent backhaul MAC (a join attempt) and
-        Agent-specific WPA rejection / unauthorized-state entries (WPA_REJECTION_PATTERN) for it. Auth frames alone only
-        prove a join attempt, not that authentication failed. Without both, the absence checks are not accepted as a pass. A completed WPA handshake (WPA_HANDSHAKE_COMPLETED_PATTERN) means the invalid credentials were accepted and fails the test.
+        Agent-specific WPA rejection / unauthorized-state entries (WPA_REJECTION_PATTERN, or a controller auth reply with a nonzero status code, WPA_AUTH_REJECT_TEMPLATE) for it. Auth frames alone only
+        prove a join attempt, not that authentication failed. Without both, the absence checks are not accepted as a pass. A completed WPA handshake (WPA_HANDSHAKE_COMPLETED_PATTERN) means the invalid credentials were accepted and fails the test;
+        it is looked for from the confirmed link-down of the old session (link_down_at, minus COMPLETION_START_TOLERANCE_SECONDS for the
+        1 s log timestamp resolution) so a connection during the settling period is not missed. Without link_down_at it is looked for
+        from observation_start. Auth frames and rejections stay scoped to the observation window.
     Parameters:
         initialize : Testbed interface.
         agent : Agent device name.
         backhaul_mac : Agent backhaul STA MAC (get_agent_backhaul_mac).
         observation_start : Controller epoch at which the observation window starts.
         observation_end : Controller epoch at which the observation window ends, or None.
+        link_down_at : Controller epoch of the confirmed link-down (wait_for_agent_link_down), or None.
     Return Value: None. Results are reported through report_logger.
-    Example: verify_agent_boot_attempts(initialize, agent, backhaul_mac, observation_start, observation_end)
+    Example: verify_agent_boot_attempts(initialize, agent, backhaul_mac, observation_start, observation_end, link_down_at)
     """
-    events = collect_controller_wifi_events(initialize, backhaul_mac, observation_start, observation_end)
+    completion_start = observation_start if link_down_at is None else min(observation_start, link_down_at - COMPLETION_START_TOLERANCE_SECONDS)
+    events = collect_controller_wifi_events(initialize, backhaul_mac, completion_start, observation_end)
     if events is None:
         report_logger.print_error(f"FAIL: The controller Wi-Fi logs ({CONTROLLER_WIFI_LOG_GLOB}) could not be evaluated for {agent} ({backhaul_mac}); boot, join attempts and rejection are not confirmed")
         return
     if events["untimestamped"]:
         report_logger.print_info(f"INFO: {events['untimestamped']} controller Wi-Fi log lines for {backhaul_mac} have no recognised timestamp and are not counted")
+    if link_down_at is None:
+        report_logger.print_info(f"INFO: The link-down time of {agent} is unknown; completed handshakes are only checked from the observation start, not during the settling period")
+    # Only the completion check covers the settling period; join attempts and rejections are judged in the observation window.
+    events["auth_frames"] = [stamp for stamp in events["auth_frames"] if stamp >= observation_start]
+    events["rejections"] = [entry for entry in events["rejections"] if entry[0] >= observation_start]
     if events["completed"]:
-        report_logger.print_error(f"FAIL: {agent} ({backhaul_mac}) completed the WPA handshake / reached the authorized state during the observation window although its backhaul credentials are invalid: {len(events['completed'])} entries, e.g. {events['completed'][0][1]!r}")
+        report_logger.print_error(f"FAIL: {agent} ({backhaul_mac}) completed the WPA handshake / reached the authorized state after its old backhaul session went down (settling period or observation window) although its backhaul credentials are invalid: {len(events['completed'])} entries, e.g. {events['completed'][0][1]!r}")
     if events["auth_frames"]:
         report_logger.print_success(f"PASS: {agent} is up and attempting the backhaul: {len(events['auth_frames'])} new auth frames from {backhaul_mac} logged by the controller during the observation window")
     else:

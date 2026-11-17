@@ -141,7 +141,7 @@ def test_backhaul_wireless_formation_negative_invalidcredentials(initialize):
         observation_end = get_controller_epoch(initialize)
         report_logger.print_success(f"PASS: Observation completed: {len(samples)} polls taken over {OBSERVATION_SECONDS}s")
         verify_agent_not_reachable(agent, agent_ip, samples)
-        verify_agent_boot_attempts(initialize, agent, backhaul_mac, observation_start, observation_end)
+        verify_agent_boot_attempts(initialize, agent, backhaul_mac, observation_start, observation_end, link_down_at)
 
         report_logger.print_step(f"STEP 5 ({agent}): Stop the packet capture on the Controller")
         local_path = device_utils.stop_and_collect_capture(initialize, "controller", capture_name)
