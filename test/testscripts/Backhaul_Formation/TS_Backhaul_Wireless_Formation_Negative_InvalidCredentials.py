@@ -151,7 +151,7 @@ def test_backhaul_wireless_formation_negative_invalidcredentials(initialize):
 
         report_logger.print_step(f"STEP 6 ({agent}): Analyze the IEEE 1905 traffic: onboarding not completed, Agent not in the active topology (partial onboarding informational)")
         before, during = verify_onboarding_not_completed(agent, agent_al_mac, controller_al_mac, packets, observation_start, observation_end, link_down_at)
-        verify_not_in_active_topology(agent, agent_al_mac, during, samples)
+        verify_not_in_active_topology(agent, agent_al_mac, during, samples, initialize)
         review_onboarding_traffic(agent, agent_al_mac, before, during, link_down_at, observation_start)
     finally:
         if capture_started:

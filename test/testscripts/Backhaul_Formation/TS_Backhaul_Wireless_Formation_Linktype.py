@@ -155,8 +155,9 @@ def test_backhaul_wireless_formation_linktype(initialize):
                 packets = [pkt for pkt in packets if float(pkt.time) >= link_down_at]
                 report_logger.print_success(f"PASS: Packet capture stopped and collected: {local_path}")
 
+                _, agent_messages = get_agent_1905_messages(packets, agent_al_mac, float("-inf"))
                 for message_type, message_name in ((MSG_TYPE_TOPOLOGY_DISCOVERY, "Topology Discovery"), (MSG_TYPE_AP_AUTOCONFIG_SEARCH, "AP Autoconfiguration Search")):
-                    present = check_message_presence(packets, message_type, src_mac=agent_al_mac) or check_message_presence(packets, message_type, dst_mac=agent_al_mac)
+                    present = [entry for entry in agent_messages if entry[0] == message_type]
                     if present:
                         report_logger.print_success(f"PASS: {message_name} observed for {agent} (AL MAC {agent_al_mac}); count: {len(present)}")
                     else:

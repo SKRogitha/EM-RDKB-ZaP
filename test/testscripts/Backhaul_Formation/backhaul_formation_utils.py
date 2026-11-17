@@ -232,6 +232,30 @@ def wait_for_agent_link_down(initialize, agent_ip):
     wait_until(unreachable, LINK_DOWN_TIMEOUT_SECONDS)
     return down.get("at")
 
+def get_1905_sender_al_mac(payload, default_src):
+    """
+    Syntax: get_1905_sender_al_mac(payload, default_src)
+    Description: Return the IEEE 1905 sender AL MAC of a CMDU. The AL MAC address TLV (type 0x01, 6-byte value) that follows
+        the 8-byte CMDU header is used when present (Topology Discovery carries it). Otherwise the Ethernet source address is
+        returned, which is only correct when the sender uses its AL MAC as the source.
+    Parameters:
+        payload : Ethernet payload (CMDU bytes, starting with the CMDU header).
+        default_src : Ethernet source address used as fallback.
+    Return Value: Lower case MAC address string.
+    Example: get_1905_sender_al_mac(bytes(eth.payload), eth.src)
+    """
+    data = bytes(payload)
+    offset = 8
+    while offset + 3 <= len(data):
+        tlv_type = data[offset]
+        tlv_length = (data[offset + 1] << 8) | data[offset + 2]
+        if tlv_type == 0x00:
+            break
+        if tlv_type == 0x01 and tlv_length == 6 and offset + 3 + 6 <= len(data):
+            return ":".join(f"{b:02x}" for b in data[offset + 3:offset + 9])
+        offset += 3 + tlv_length
+    return str(default_src).lower()
+
 def get_agent_1905_messages(packets, agent_al_mac, observation_start, observation_end=None):
     """
     Syntax: get_agent_1905_messages(packets, agent_al_mac, observation_start, observation_end)
@@ -251,10 +275,10 @@ def get_agent_1905_messages(packets, agent_al_mac, observation_start, observatio
         if not pkt.haslayer(Ether):
             continue
         eth = pkt[Ether]
-        from_agent = eth.src.lower() == agent_mac
+        payload = bytes(eth.payload)
+        from_agent = get_1905_sender_al_mac(payload, eth.src) == agent_mac
         if not from_agent and eth.dst.lower() != agent_mac:
             continue
-        payload = bytes(eth.payload)
         if len(payload) < 4:
             continue
         entry = ((payload[2] << 8) | payload[3], from_agent, float(pkt.time))
@@ -322,9 +346,10 @@ def verify_topology_exchange(agent, agent_al_mac, controller_al_mac, packets):
             continue
         eth = pkt[Ether]
         payload = bytes(eth.payload)
-        if len(payload) < 6 or {eth.src.lower(), eth.dst.lower()} != peers:
+        sender = get_1905_sender_al_mac(payload, eth.src)
+        if len(payload) < 6 or {sender, eth.dst.lower()} != peers:
             continue
-        entry = (eth.src.lower(), eth.dst.lower(), (payload[4] << 8) | payload[5], float(pkt.time))
+        entry = (sender, eth.dst.lower(), (payload[4] << 8) | payload[5], float(pkt.time))
         message_type = (payload[2] << 8) | payload[3]
         if message_type == MSG_TYPE_AP_TOPOLOGY_QUERY:
             queries.append(entry)
@@ -522,6 +547,29 @@ def verify_agent_boot_attempts(initialize, agent, backhaul_mac, observation_star
     else:
         report_logger.print_error(f"FAIL: No WPA rejection or unauthorized-state entry for {agent} ({backhaul_mac}) in the controller logs during the observation window; a join attempt alone does not prove that wireless authentication did not complete (verify through out-of-band Agent access if the controller does not log it)")
 
+def has_sender_message(packets, message_type, sender_al_mac):
+    """
+    Syntax: has_sender_message(packets, message_type, sender_al_mac)
+    Description: Return True when a packet carries message_type whose IEEE 1905 sender AL MAC (AL MAC address TLV, falling back to the Ethernet source) equals sender_al_mac.
+    Parameters:
+        packets : Capture packets to search.
+        message_type : IEEE 1905 message type to look for.
+        sender_al_mac : Sender AL MAC address.
+    Return Value: True when a matching packet exists; otherwise False.
+    Example: has_sender_message(observation_packets, MSG_TYPE_TOPOLOGY_DISCOVERY, controller_al_mac)
+    """
+    sender = str(sender_al_mac).lower()
+    for pkt in packets:
+        if not pkt.haslayer(Ether):
+            continue
+        eth = pkt[Ether]
+        payload = bytes(eth.payload)
+        if len(payload) < 4 or ((payload[2] << 8) | payload[3]) != message_type:
+            continue
+        if get_1905_sender_al_mac(payload, eth.src) == sender:
+            return True
+    return False
+
 def verify_onboarding_not_completed(agent, agent_al_mac, controller_al_mac, packets, observation_start, observation_end=None, link_down_at=None):
     """
     Syntax: verify_onboarding_not_completed(agent, agent_al_mac, controller_al_mac, packets, observation_start, observation_end, link_down_at)
@@ -541,7 +589,7 @@ def verify_onboarding_not_completed(agent, agent_al_mac, controller_al_mac, pack
     Example: verify_onboarding_not_completed(agent, agent_al_mac, controller_al_mac, packets, start, end, restart)
     """
     observation_packets = [pkt for pkt in packets if float(pkt.time) >= observation_start and (observation_end is None or float(pkt.time) <= observation_end)]
-    if check_message_presence(observation_packets, MSG_TYPE_TOPOLOGY_DISCOVERY, src_mac=controller_al_mac):
+    if has_sender_message(observation_packets, MSG_TYPE_TOPOLOGY_DISCOVERY, controller_al_mac):
         report_logger.print_success(f"PASS: The capture is valid: Topology Discovery from the Controller (AL MAC {controller_al_mac}) is present during the observation window")
     else:
         report_logger.print_error(f"FAIL: No Topology Discovery from the Controller (AL MAC {controller_al_mac}) during the observation window; the capture cannot be used as evidence")
@@ -558,9 +606,26 @@ def verify_onboarding_not_completed(agent, agent_al_mac, controller_al_mac, pack
         report_logger.print_success(f"PASS: Onboarding of {agent} did not complete successfully: no AP Autoconfiguration WSC from the Controller to {agent_al_mac} since the old session went down")
     return before, during
 
-def verify_not_in_active_topology(agent, agent_al_mac, agent_messages, samples):
+def get_controller_topology_entry(initialize, agent, agent_al_mac):
     """
-    Syntax: verify_not_in_active_topology(agent, agent_al_mac, agent_messages, samples)
+    Syntax: get_controller_topology_entry(initialize, agent, agent_al_mac)
+    Description: Look up the agent AL MAC in the controller DataElements topology (initialize.get_device_index).
+        None or -1 means the agent is not listed in the controller topology.
+    Parameters:
+        initialize : Testbed interface.
+        agent : Agent device name.
+        agent_al_mac : Agent AL MAC address.
+    Return Value: The device index, or None when the agent is not listed.
+    Example: get_controller_topology_entry(initialize, agent, agent_al_mac)
+    """
+    index = initialize.get_device_index("controller", agent_al_mac, "de")
+    if index is None or str(index).strip() in ("", "-1"):
+        return None
+    return index
+
+def verify_not_in_active_topology(agent, agent_al_mac, agent_messages, samples, initialize=None):
+    """
+    Syntax: verify_not_in_active_topology(agent, agent_al_mac, agent_messages, samples, initialize)
     Description: Plan check: the agent does not rejoin the active topology. It must not be reachable from the controller in
         the final sample, and must not send 1905 messages other than AP Autoconfiguration (Topology Discovery,
         Topology Notification, Topology Response, ...) during the observation window.
@@ -579,6 +644,17 @@ def verify_not_in_active_topology(agent, agent_al_mac, agent_messages, samples):
         report_logger.print_error(f"FAIL: {agent} rejoined the active topology: it is reachable from the Controller in the final poll")
     else:
         report_logger.print_success(f"PASS: In the final poll {agent} is not reachable from the Controller")
+
+    if initialize is not None:
+        try:
+            index = get_controller_topology_entry(initialize, agent, agent_al_mac)
+        except Exception as error:
+            report_logger.print_error(f"FAIL: The controller topology entry of {agent} (AL MAC {agent_al_mac}) could not be read: {error}")
+        else:
+            if index is None:
+                report_logger.print_success(f"PASS: {agent} (AL MAC {agent_al_mac}) is not listed in the controller topology")
+            else:
+                report_logger.print_error(f"FAIL: {agent} (AL MAC {agent_al_mac}) is still listed in the controller topology (index {index})")
 
     topology = [entry for entry in agent_messages if entry[1] and entry[0] not in ONBOARDING_MESSAGE_TYPES]
     if topology:
