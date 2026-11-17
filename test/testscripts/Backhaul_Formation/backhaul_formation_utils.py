@@ -61,6 +61,9 @@ WIFI_LOG_TIMESTAMP_FORMATS = ((r"^(\d{6}-\d{2}:\d{2}:\d{2})", "%y%m%d-%H:%M:%S")
 WPA_REJECTION_PATTERN = r"deauth|disassoc|(4-?way|handshake|auth(entication)?|assoc(iation)?)\b.*(fail|reject|denied|time(d)? ?out)|(wrong|incorrect) (key|pass)|mic (failure|fail)|unauthori[sz]ed|status[ _]?code\s*[=:]?\s*[1-9]\d*"
 # Lines that report success are never rejection evidence (e.g. "pairwise key handshake completed", status_code=0), even if they also contain a rejection keyword.
 WPA_SUCCESS_PATTERN = r"\b(completed|succeeded|success|successful(ly)?)\b|status[ _]?code\s*[=:]?\s*0\b"
+# Lines that show the agent completed the WPA handshake / reached the authorized state. With invalid credentials this must never happen: it means the passphrase was accepted, so it fails the test (never discard these lines).
+WPA_HANDSHAKE_COMPLETED_PATTERN = r"(4-?way|pairwise|handshake|\bptk\b|\bgtk\b)\b.*\b(complete[d]?|success(ful(ly)?)?|established|done)\b|\bport (is )?authori[sz]ed\b|\bstate\s*[=:]?\s*authori[sz]ed\b"
+WPA_HANDSHAKE_NEGATION_PATTERN = r"\b(not|never|fail(ed|ure)?|unsuccessful)\b"
 # Time (seconds) during which the agent must NOT form the backhaul with the invalid credentials.
 OBSERVATION_SECONDS = 240
 # Interval (seconds) between the samples taken during the observation window.
@@ -420,7 +423,7 @@ def collect_controller_wifi_events(initialize, mac, since_epoch, until_epoch=Non
         mac : MAC address to look for.
         since_epoch : Controller epoch from which entries count (observation start).
         until_epoch : Controller epoch up to which entries count, or None.
-    Return Value: Dict with auth_frames (list of epochs), rejections (list of (epoch, line)) and untimestamped (number of
+    Return Value: Dict with auth_frames (list of epochs), completed (list of (epoch, line) WPA handshake completions), rejections (list of (epoch, line)) and untimestamped (number of
         matching lines that could not be timed), or None when the controller time zone cannot be read.
     Example: collect_controller_wifi_events(initialize, backhaul_mac, observation_start, observation_end)
     """
@@ -428,16 +431,23 @@ def collect_controller_wifi_events(initialize, mac, since_epoch, until_epoch=Non
     if utc_offset is None:
         return None
     output = ssh_exec(initialize, "controller", f"grep -a -h -i '{mac}' {CONTROLLER_WIFI_LOG_GLOB} 2>/dev/null")
-    events = {"auth_frames": [], "rejections": [], "untimestamped": 0}
+    events = {"auth_frames": [], "rejections": [], "completed": [], "untimestamped": 0}
     for line in output.splitlines():
         is_auth = re.search(rf"received auth frame from:\s*{re.escape(mac)}", line, re.IGNORECASE) is not None
-        if not is_auth and (not re.search(WPA_REJECTION_PATTERN, line, re.IGNORECASE) or re.search(WPA_SUCCESS_PATTERN, line, re.IGNORECASE)):
+        is_completed = not is_auth and re.search(WPA_HANDSHAKE_COMPLETED_PATTERN, line, re.IGNORECASE) is not None and re.search(WPA_HANDSHAKE_NEGATION_PATTERN, line, re.IGNORECASE) is None
+        is_rejection = not is_auth and not is_completed and re.search(WPA_REJECTION_PATTERN, line, re.IGNORECASE) is not None and re.search(WPA_SUCCESS_PATTERN, line, re.IGNORECASE) is None
+        if not (is_auth or is_completed or is_rejection):
             continue
         stamp = parse_log_timestamp(line, utc_offset)
         if stamp is None:
             events["untimestamped"] += 1
         elif stamp >= since_epoch and (until_epoch is None or stamp <= until_epoch):
-            (events["auth_frames"] if is_auth else events["rejections"]).append(stamp if is_auth else (stamp, line.strip()))
+            if is_auth:
+                events["auth_frames"].append(stamp)
+            elif is_completed:
+                events["completed"].append((stamp, line.strip()))
+            else:
+                events["rejections"].append((stamp, line.strip()))
     return events
 
 def verify_agent_boot_attempts(initialize, agent, backhaul_mac, observation_start, observation_end=None):
@@ -447,7 +457,7 @@ def verify_agent_boot_attempts(initialize, agent, backhaul_mac, observation_star
         required in the new timestamped controller Wi-Fi log entries of the observation window (rotation aware, see
         collect_controller_wifi_events): "received auth frame" entries for the agent backhaul MAC (a join attempt) and
         Agent-specific WPA rejection / unauthorized-state entries (WPA_REJECTION_PATTERN) for it. Auth frames alone only
-        prove a join attempt, not that authentication failed. Without both, the absence checks are not accepted as a pass.
+        prove a join attempt, not that authentication failed. Without both, the absence checks are not accepted as a pass. A completed WPA handshake (WPA_HANDSHAKE_COMPLETED_PATTERN) means the invalid credentials were accepted and fails the test.
     Parameters:
         initialize : Testbed interface.
         agent : Agent device name.
@@ -463,6 +473,8 @@ def verify_agent_boot_attempts(initialize, agent, backhaul_mac, observation_star
         return
     if events["untimestamped"]:
         report_logger.print_info(f"INFO: {events['untimestamped']} controller Wi-Fi log lines for {backhaul_mac} have no recognised timestamp and are not counted")
+    if events["completed"]:
+        report_logger.print_error(f"FAIL: {agent} ({backhaul_mac}) completed the WPA handshake / reached the authorized state during the observation window although its backhaul credentials are invalid: {len(events['completed'])} entries, e.g. {events['completed'][0][1]!r}")
     if events["auth_frames"]:
         report_logger.print_success(f"PASS: {agent} is up and attempting the backhaul: {len(events['auth_frames'])} new auth frames from {backhaul_mac} logged by the controller during the observation window")
     else:
