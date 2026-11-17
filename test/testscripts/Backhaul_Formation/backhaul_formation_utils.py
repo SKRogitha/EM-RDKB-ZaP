@@ -173,6 +173,25 @@ def get_fdb_ports(initialize, agent, mac):
                 ports.append(port_match.group(1))
     return ports, output
 
+def wait_for_fdb_ports(initialize, agent, mac, timeout):
+    """
+    Syntax: wait_for_fdb_ports(initialize, agent, mac, timeout)
+    Description: Wait until the agent bridge has learned mac on at least one port (bridge fdb show).
+    Parameters:
+        initialize : Testbed interface.
+        agent : Agent device name.
+        mac : MAC address to look up.
+        timeout : Maximum time in seconds to wait.
+    Return Value: Tuple (ports, output) of the last lookup; ports is empty when mac was not learned within timeout.
+    Example: wait_for_fdb_ports(initialize, agent, controller_al_mac, ONBOARDING_SETTLE_SECONDS * 2)
+    """
+    result = {"ports": [], "output": ""}
+    def learned():
+        result["ports"], result["output"] = get_fdb_ports(initialize, agent, mac)
+        return bool(result["ports"])
+    wait_until(learned, timeout)
+    return result["ports"], result["output"]
+
 def get_controller_epoch(initialize):
     """
     Syntax: get_controller_epoch(initialize)
@@ -183,6 +202,10 @@ def get_controller_epoch(initialize):
     Return Value: Controller epoch time as a float.
     Example: get_controller_epoch(initialize)
     """
+    try:
+        return float(initialize.get_time_stamp("controller"))
+    except Exception:
+        report_logger.print_info("INFO: initialize.get_time_stamp is not available on the controller; reading the time with date")
     output = last_line(ssh_exec(initialize, "controller", "date +%s.%N"))
     if not re.match(r"^\d+\.\d+$", output):
         output = last_line(ssh_exec(initialize, "controller", "date +%s"))
@@ -268,7 +291,7 @@ def verify_onboarding_message_order(agent, agent_al_mac, packets, reboot_request
     Example: verify_onboarding_message_order(agent, agent_al_mac, packets, reboot_requested_at)
     """
     _, entries = get_agent_1905_messages(packets, agent_al_mac, reboot_requested_at)
-    first = lambda message_type: min((entry[2] for entry in entries if entry[0] == message_type), default=None)
+    first = lambda message_type: min((entry[2] for entry in entries if entry[0] == message_type and entry[1]), default=None)
     discovery, search, response = first(MSG_TYPE_TOPOLOGY_DISCOVERY), first(MSG_TYPE_AP_AUTOCONFIG_SEARCH), first(MSG_TYPE_AP_TOPOLOGY_RESPONSE)
     if None in (discovery, search, response):
         report_logger.print_error(f"FAIL: The message order for {agent} cannot be verified; Topology Discovery, AP Autoconfiguration Search or Topology Response is missing")

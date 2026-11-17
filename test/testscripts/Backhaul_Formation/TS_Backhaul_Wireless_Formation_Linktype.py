@@ -115,13 +115,8 @@ def test_backhaul_wireless_formation_linktype(initialize):
                     report_logger.print_success(f"PASS: Signal strength is displayed: {signal[0]}")
 
                 report_logger.print_step(f"STEP 4 ({agent}): Verify the backhaul link type: the controller AL MAC {controller_al_mac} must be learned on {backhaul_iface} in the {agent} bridge (bridge fdb show)")
-                fdb_result = {}
-                def controller_learned():
-                    fdb_result["ports"], fdb_result["output"] = get_fdb_ports(initialize, agent, controller_al_mac)
-                    return bool(fdb_result["ports"])
-                wait_until(controller_learned, timeout=ONBOARDING_SETTLE_SECONDS * 2)
-                fdb_ports = fdb_result.get("ports", [])
-                report_logger.print_info(f"INFO: Bridge FDB entries for the controller AL MAC:\n{fdb_result.get('output', '')}")
+                fdb_ports, fdb_output = wait_for_fdb_ports(initialize, agent, controller_al_mac, ONBOARDING_SETTLE_SECONDS * 2)
+                report_logger.print_info(f"INFO: Bridge FDB entries for the controller AL MAC:\n{fdb_output}")
                 if not fdb_ports:
                     report_logger.print_error(f"FAIL: Controller AL MAC {controller_al_mac} is not learned in the {agent} bridge; the backhaul link type cannot be determined")
                 else:
