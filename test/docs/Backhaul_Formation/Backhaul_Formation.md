@@ -225,10 +225,10 @@ Verify that Agent 1's Wi-Fi backhaul STA successfully re-associates and restores
 | Step Number | Controller/Agent Action | Expected Result |
 |-------------|------------|-----------------|
 | 1 | Verify current association using `iw dev wifi1.3 link` | Current BSSID and connection state are displayed. |
-| 2 | Start capture using `tcpdump -i wifi1.3 -w /tmp/backhaul_reassoc.pcap ether proto 0x888e` | Packet capture starts successfully and monitors EAPOL traffic. |
+| 2 | Start the capture from an out-of-band console, or detached so it survives the SSH disconnect: `nohup tcpdump -i wifi1.3 -w /tmp/backhaul_reassoc.pcap ether proto 0x888e > /dev/null 2>&1 &`. Record its PID with `echo $!` | Packet capture starts successfully, monitors EAPOL traffic and keeps running when the backhaul SSH session drops. |
 | 3 | Trigger re-association from an out-of-band console on Agent 1 that stays accessible when the backhaul is down, or with a single detached Agent-side command that survives the SSH disconnect and runs `ifconfig wifi1.3 down` followed by `ifconfig wifi1.3 up`. Do not send these as separate commands over the backhaul SSH session. | Backhaul link disconnects and initiates reconnection. |
 | 4 | Verify connection using `iw dev wifi1.3 link` | Agent reconnects successfully to a valid backhaul BSSID. |
-| 5 | Stop packet capture and inspect using `tcpdump -r /tmp/backhaul_reassoc.pcap -n` | Fresh EAPOL 4-Way Handshake (M1-M4) is observed. |
+| 5 | Stop the capture with `kill -INT <capture_pid>` and inspect using `tcpdump -r /tmp/backhaul_reassoc.pcap -n` | Fresh EAPOL 4-Way Handshake (M1-M4) is observed. |
 | 6 | Compare pre- and post-reassociation connection details, then run `ping -c 3 <agent_ip>` from the Controller after reassociation | Agent is associated with the expected backhaul BSS and successful ping responses confirm that Controller-to-Agent connectivity has been restored. |
 
 ---
