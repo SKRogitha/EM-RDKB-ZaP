@@ -893,3 +893,20 @@ class FeatureInterfaceCLI(DatabaseModule,
                 if candidate.startswith("wifi") and ".sta" in candidate:
                     interfaces.append(candidate)
         return list(dict.fromkeys(interfaces))
+
+    def get_bridge_fdb_port(self, device: str, mac: str) -> str:
+        """
+        Return the bridge port on which the given MAC address was learned.
+        """
+        zi_logger.print_context()
+        connection = self.db_obj.read_from_database(device, 'connection')
+        connection_obj = self.get_connection_module_object(connection)
+        command = f"bridge fdb show | grep -i {shlex.quote(mac)}"
+        output, error = connection_obj.execute_command(device, command, return_stderr=True)
+        if error:
+            raise RuntimeError(f"Command execution failed: {command}. stderr: {error.strip()}")
+        for line in str(output).splitlines():
+            match = re.search(r"\bdev\s+(\S+)", line)
+            if match and "permanent" not in line:
+                return match.group(1)
+        raise RuntimeError(f"MAC {mac} was not learned in the bridge fdb of {device}. Captured output:\n{output}")

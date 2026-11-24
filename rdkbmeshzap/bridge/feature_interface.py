@@ -653,3 +653,11 @@ class FeatureInterface(FeatureInterfaceModules):
         zi_logger.print_context()
         iface_obj = self.get_feature_interface_module_object(method)
         return iface_obj.get_bridge_station_interfaces(device, bridge_iface)
+
+    def get_bridge_fdb_port(self, device: str, mac: str, method: str = 'cli') -> str:
+        """
+        Get the bridge port on which a MAC address was learned.
+        """
+        zi_logger.print_context()
+        iface_obj = self.get_feature_interface_module_object(method)
+        return iface_obj.get_bridge_fdb_port(device, mac)
