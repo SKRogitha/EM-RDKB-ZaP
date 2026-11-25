@@ -1,20 +1,3 @@
-# If not stated otherwise in this file or this component LICENSE file the
-# following copyright and licenses apply:
-#
-# Copyright 2026 RDK Management
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-
 import time
 import backhaul_formation_utils
 from zaero.utils import zi_logger
@@ -41,10 +24,20 @@ def test_backhaul_wireless_formation_linktype(initialize):
         # Reboot the Agent and wait for it to recover within the KPI.
         report_logger.print_step("STEP 2: Reboot the Agent and wait for recovery")
         reboot_time = initialize.get_time_stamp("controller")
+        # Start the recovery timer before the reboot so the KPI covers the whole outage.
+        started_at = time.monotonic()
         initialize.reboot_device(agent, method="cli")
         report_logger.print_info(f"INFO: Reboot command executed for {agent}")
+        # Wait for the Agent to go down so a reconnect to the old boot is not counted as recovery.
+        down_deadline = started_at + recovery_utils.get_recovery_kpi(initialize, "agent")
+        while initialize.is_device_alive(agent) and time.monotonic() < down_deadline:
+            time.sleep(1)
+        if initialize.is_device_alive(agent):
+            report_logger.print_error(f"FAIL: {agent} did not go down after the reboot command")
+            return
+        report_logger.print_success(f"PASS: {agent} went down after the reboot command")
         results = {}
-        recovery_utils.recover_device(initialize=initialize, device=agent, started_at=time.monotonic(), results=results, recovery_type="agent")
+        recovery_utils.recover_device(initialize=initialize, device=agent, started_at=started_at, results=results, recovery_type="agent")
         result = results.get(agent)
         if isinstance(result, BaseException) or result is False or result is None:
             report_logger.print_error(f"FAIL: {agent} did not recover within the KPI")
